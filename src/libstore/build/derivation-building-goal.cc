@@ -19,10 +19,14 @@
 #include "nix/store/outputs-query.hh"
 #include "nix/store/globals.hh"
 #include "nix/util/current-process.hh"
+#include "nix/util/callback.hh"
+#include "nix/util/signals.hh"
+#include "goal-impl.hh"
 
 #include <chrono>
 #include <algorithm>
 #include <array>
+#include <thread>
 
 #include <sys/types.h>
 #include <fcntl.h>
@@ -1067,14 +1071,30 @@ Goal::Co<DerivationBuildingGoal::LocalBuildOutcome> DerivationBuildingGoal::buil
     }
 
     SingleDrvOutputs builtOutputs;
+    /* Registering reads each output several times and cleanup deletes the
+       build directory, so both run here, joined before `builder` dies. */
+    std::jthread registration;
     try {
-        /* Compute the FS closure of the outputs and register them as
-           being valid. With builder-rpc-v0 the builder already submitted
-           the outputs, so check those instead. */
-        builtOutputs = drvOptions.getRequiredSystemFeatures(*drv).count(std::string{drvFeatureBuilderRpcV0})
-                           ? builder->checkSubmittedOutputs(localBuildCap.localStore)
-                           : builder->registerOutputs(localBuildCap.localStore);
-        builder->cleanupBuild(true);
+        bool submitted = drvOptions.getRequiredSystemFeatures(*drv).count(std::string{drvFeatureBuilderRpcV0});
+        builtOutputs = co_await AsyncCallback<SingleDrvOutputs>{[&](Callback<SingleDrvOutputs> callback) {
+            registration = std::jthread([callback = std::move(callback),
+                                         builder = builder.get(),
+                                         &localStore = localBuildCap.localStore,
+                                         submitted]() mutable {
+                try {
+                    ReceiveInterrupts receiveInterrupts;
+                    /* Compute the FS closure of the outputs and register them as
+                       being valid. With builder-rpc-v0 the builder already submitted
+                       the outputs, so check those instead. */
+                    auto outputs =
+                        submitted ? builder->checkSubmittedOutputs(localStore) : builder->registerOutputs(localStore);
+                    builder->cleanupBuild(true);
+                    callback(std::move(outputs));
+                } catch (...) {
+                    callback.rethrow();
+                }
+            });
+        }};
     } catch (BuilderFailureError & e) {
         builder.reset();
         outputLocks.unlock();
