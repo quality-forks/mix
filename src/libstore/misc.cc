@@ -354,9 +354,23 @@ StorePaths Store::topoSortPaths(const StorePathSet & paths)
         result);
 }
 
+/**
+ * A build trace entry can outlive its derivation, which then counts as unbuilt.
+ */
+static StorePath
+resolveDrvPath(Store & store, const SingleDerivedPath & drvReq, std::string_view output, Store * evalStore_)
+{
+    auto drvPath = resolveDerivedPath(store, drvReq, evalStore_);
+    auto & evalStore = evalStore_ ? *evalStore_ : store;
+    if (std::holds_alternative<SingleDerivedPath::Built>(drvReq.raw()) && !evalStore.isValidPath(drvPath)
+        && !store.isValidPath(drvPath))
+        throw MissingRealisation(store, drvReq, drvPath, OutputName{output});
+    return drvPath;
+}
+
 OutputPathMap resolveDerivedPath(Store & store, const DerivedPath::Built & bfd, Store * evalStore_)
 {
-    auto drvPath = resolveDerivedPath(store, *bfd.drvPath, evalStore_);
+    auto drvPath = resolveDrvPath(store, *bfd.drvPath, bfd.outputs.to_string(), evalStore_);
 
     auto outputsOpt_ = deepQueryPartialDerivationOutputMap(store, drvPath, evalStore_);
 
@@ -399,7 +413,7 @@ StorePath resolveDerivedPath(Store & store, const SingleDerivedPath & req, Store
         overloaded{
             [&](const SingleDerivedPath::Opaque & bo) { return bo.path; },
             [&](const SingleDerivedPath::Built & bfd) {
-                auto drvPath = resolveDerivedPath(store, *bfd.drvPath, evalStore_);
+                auto drvPath = resolveDrvPath(store, *bfd.drvPath, bfd.output, evalStore_);
                 auto outPath = deepQueryPartialDerivationOutput(store, drvPath, bfd.output, evalStore_);
                 if (!outPath)
                     throw MissingRealisation(store, *bfd.drvPath, drvPath, bfd.output);

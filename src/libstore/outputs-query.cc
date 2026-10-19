@@ -32,6 +32,14 @@ static std::optional<StorePath> deepQueryPartialDerivationOutputImpl(
     ResolveCache & cache,
     RealisationCache & resCache);
 
+static std::optional<StorePath> resolveDerivationPath(
+    Store & store,
+    const SingleDerivedPath & drvPath,
+    Store * evalStore_,
+    QueryRealisationFun & queryRealisation,
+    ResolveCache & cache,
+    RealisationCache & resCache);
+
 /**
  * Resolve a `SingleDerivedPath` to a concrete store path.
  *
@@ -54,7 +62,7 @@ static std::optional<StorePath> resolveSingleDerivedPath(
             [](const SingleDerivedPath::Opaque & opaque) -> std::optional<StorePath> { return opaque.path; },
             [&](const SingleDerivedPath::Built & built) -> std::optional<StorePath> {
                 auto innerPath =
-                    resolveSingleDerivedPath(store, *built.drvPath, evalStore_, queryRealisation, cache, resCache);
+                    resolveDerivationPath(store, *built.drvPath, evalStore_, queryRealisation, cache, resCache);
                 if (!innerPath)
                     return std::nullopt;
                 return deepQueryPartialDerivationOutputImpl(
@@ -62,6 +70,22 @@ static std::optional<StorePath> resolveSingleDerivedPath(
             },
         },
         path.raw());
+}
+
+static std::optional<StorePath> resolveDerivationPath(
+    Store & store,
+    const SingleDerivedPath & drvPath,
+    Store * evalStore_,
+    QueryRealisationFun & queryRealisation,
+    ResolveCache & cache,
+    RealisationCache & resCache)
+{
+    auto resolved = resolveSingleDerivedPath(store, drvPath, evalStore_, queryRealisation, cache, resCache);
+    auto & evalStore = evalStore_ ? *evalStore_ : store;
+    if (resolved && std::holds_alternative<SingleDerivedPath::Built>(drvPath.raw()) && !evalStore.isValidPath(*resolved)
+        && !store.isValidPath(*resolved))
+        return std::nullopt;
+    return resolved;
 }
 
 /**
@@ -100,7 +124,7 @@ static std::pair<Derivation, StorePath> resolveDerivation(
             [&](ref<const SingleDerivedPath> depDrvPath,
                 const std::string & depOutputName) -> std::optional<StorePath> {
                 auto concreteDrvPath =
-                    resolveSingleDerivedPath(store, *depDrvPath, evalStore_, queryRealisation, cache, resCache);
+                    resolveDerivationPath(store, *depDrvPath, evalStore_, queryRealisation, cache, resCache);
                 if (!concreteDrvPath)
                     return std::nullopt;
                 return deepQueryPartialDerivationOutputImpl(
