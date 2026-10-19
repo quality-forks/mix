@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <set>
 #include <memory>
+#include <vector>
 #include <tuple>
 
 #ifdef __APPLE__
@@ -429,7 +430,21 @@ static int main_build_remote(int argc, char ** argv)
             if (auto localStore = store.dynamic_pointer_cast<LocalStore>())
                 for (auto & path : missingPaths)
                     localStore->locksHeld.insert(store->printStorePath(path)); /* FIXME: ugly */
-            copyPaths(*sshStore, *store, missingPaths, NoRepair, NoCheckSigs, NoSubstitute);
+
+            // A builder-rpc-v0 build can add store objects that its outputs
+            // reference, and only the remote store has them.
+            auto toCopy = missingPaths;
+            std::vector<StorePath> pending(missingPaths.begin(), missingPaths.end());
+            while (!pending.empty()) {
+                auto path = std::move(pending.back());
+                pending.pop_back();
+                for (auto & reference : sshStore->queryPathInfo(path)->references)
+                    if (!toCopy.contains(reference) && !store->isValidPath(reference)) {
+                        toCopy.insert(reference);
+                        pending.push_back(reference);
+                    }
+            }
+            copyPaths(*sshStore, *store, toCopy, NoRepair, NoCheckSigs, NoSubstitute);
         }
         // XXX: Should be done as part of `copyPaths`
         for (auto & realisation : missingRealisations) {
