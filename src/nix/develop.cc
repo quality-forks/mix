@@ -256,7 +256,7 @@ static StorePath getDerivationEnvironment(ref<Store> store, ref<Store> evalStore
 
     /* Remove derivation checks. */
     if (drv.structuredAttrs) {
-        drv.structuredAttrs->structuredAttrs.erase("outputChecks");
+        drv.structuredAttrs.unshare().structuredAttrs.erase("outputChecks");
     } else {
         drv.env.erase("allowedReferences");
         drv.env.erase("allowedRequisites");

@@ -221,7 +221,7 @@ struct Derivation
      * Must not contain the key `__json`, at least in order to serialize to ATerm.
      */
     StringPairs env;
-    std::optional<StructuredAttrs> structuredAttrs;
+    SharedStructuredAttrs structuredAttrs;
 
     std::string name;
 

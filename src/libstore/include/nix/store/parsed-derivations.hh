@@ -1,6 +1,8 @@
 #pragma once
 ///@file
 
+#include <memory>
+
 #include <nlohmann/json.hpp>
 
 #include "nix/util/types.hh"
@@ -79,5 +81,60 @@ struct StructuredAttrs
      */
     static std::string writeShell(const nlohmann::json::object_t & prepared);
 };
+
+/**
+ * A derivation's structured attrs, shared by its copies since the attrs
+ * are nearly all of its memory, often several times the size of the
+ * derivation file.
+ */
+class SharedStructuredAttrs
+{
+    std::shared_ptr<StructuredAttrs> attrs;
+
+public:
+    SharedStructuredAttrs() = default;
+
+    SharedStructuredAttrs(std::nullopt_t) {}
+
+    SharedStructuredAttrs(StructuredAttrs attrs)
+        : attrs{std::make_shared<StructuredAttrs>(std::move(attrs))}
+    {
+    }
+
+    SharedStructuredAttrs(std::optional<StructuredAttrs> attrs)
+        : attrs{attrs ? std::make_shared<StructuredAttrs>(std::move(*attrs)) : nullptr}
+    {
+    }
+
+    explicit operator bool() const
+    {
+        return bool(attrs);
+    }
+
+    const StructuredAttrs & operator*() const
+    {
+        return *attrs;
+    }
+
+    const StructuredAttrs * operator->() const
+    {
+        return attrs.get();
+    }
+
+    /**
+     * The attrs to change, copied first if another derivation shares them.
+     */
+    StructuredAttrs & unshare();
+
+    bool operator==(const SharedStructuredAttrs & other) const;
+};
+
+/**
+ * Like `get` on a `std::optional`.
+ */
+inline const StructuredAttrs * get(const SharedStructuredAttrs & attrs)
+{
+    return attrs ? &*attrs : nullptr;
+}
 
 } // namespace nix

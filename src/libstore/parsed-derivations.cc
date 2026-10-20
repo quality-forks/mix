@@ -38,6 +38,19 @@ bool StructuredAttrs::operator==(const StructuredAttrs & other) const
     return verbatim ? *verbatim == other.unparse().second : unparse().second == *other.verbatim;
 }
 
+StructuredAttrs & SharedStructuredAttrs::unshare()
+{
+    assert(attrs);
+    if (attrs.use_count() > 1)
+        attrs = std::make_shared<StructuredAttrs>(*attrs);
+    return *attrs;
+}
+
+bool SharedStructuredAttrs::operator==(const SharedStructuredAttrs & other) const
+{
+    return attrs == other.attrs || (attrs && other.attrs && *attrs == *other.attrs);
+}
+
 std::optional<StructuredAttrs> StructuredAttrs::tryExtract(StringPairs & env)
 {
     /* Parse the __json attribute, if any. */
