@@ -1389,12 +1389,9 @@ std::map<std::string, std::optional<StorePath>> DerivationBuildingGoal::queryPar
 {
     assert(!type(*drv).isImpure());
 
-    for (auto * drvStore : {&worker.evalStore, &worker.store})
-        if (drvStore->isValidPath(drvPath))
-            return worker.store.queryPartialDerivationOutputMap(drvPath, drvStore);
-
-    /* In-memory derivation will naturally fall back on this case, where
-       we do best-effort with static information. */
+    /* The store's map would read and parse the derivation file again for
+       what `drv` already has, and this derivation needs no resolving, so
+       its realisations, which `checkPathValidity` queries, are its own. */
     std::map<std::string, std::optional<StorePath>> res;
     for (auto & [name, output] : drv->outputs)
         res.insert_or_assign(name, output.path(worker.store, drv->name, name));
