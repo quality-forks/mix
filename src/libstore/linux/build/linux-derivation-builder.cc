@@ -555,6 +555,13 @@ void ChrootLinuxDerivationBuilder::startChild()
     Pipe sendPid;
     sendPid.create();
 
+    AutoCloseFD cgroupFd;
+    if (cgroup) {
+        cgroupFd = open(cgroup->c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (!cgroupFd)
+            throw SysError("opening cgroup %s", PathFmt(*cgroup));
+    }
+
     Pid helper = startProcess([&]() {
         sendPid.readSide.close();
 
@@ -575,6 +582,7 @@ void ChrootLinuxDerivationBuilder::startChild()
             }
 
             ProcessOptions options;
+            options.cgroupFd = cgroupFd.get();
             options.cloneFlags = CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWIPC | CLONE_NEWUTS | CLONE_PARENT | SIGCHLD;
             if (derivationType.isSandboxed())
                 options.cloneFlags |= CLONE_NEWNET;
@@ -674,10 +682,6 @@ void ChrootLinuxDerivationBuilder::startChild()
         if (sandboxUserNamespace.get() == -1)
             throw SysError("getting sandbox user namespace");
     }
-
-    /* Move the child into its own cgroup. */
-    if (cgroup)
-        writeFile(*cgroup / "cgroup.procs", fmt("%d", (pid_t) pid));
 
     /* Signal the builder that we've updated its user namespace. */
     writeFull(userNamespaceSync.writeSide.get(), "1\n");

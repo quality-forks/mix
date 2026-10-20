@@ -27,6 +27,8 @@
 #ifdef __linux__
 #  include <sys/prctl.h>
 #  include <sys/mman.h>
+#  include <sys/syscall.h>
+#  include <linux/sched.h>
 #endif
 
 #include "util-unix-config-private.hh"
@@ -270,6 +272,28 @@ pid_t startProcess(fun<void()> processMain, const ProcessOptions & options)
 
     pid_t pid = INVALID_PID;
 
+#ifdef __linux__
+    /* Moving a process into a cgroup waits for every fork and exit in flight
+       on the system, which starting it there skips. clone3 refuses an exit
+       signal beside CLONE_PARENT, whose child takes the caller's. */
+    if (options.cgroupFd != -1) {
+        clone_args args{
+            .flags = static_cast<uint64_t>(options.cloneFlags & ~CSIGNAL) | CLONE_INTO_CGROUP,
+            .exit_signal = options.cloneFlags & CLONE_PARENT ? 0u : SIGCHLD,
+            .cgroup = static_cast<uint64_t>(options.cgroupFd),
+        };
+        pid = syscall(SYS_clone3, &args, sizeof(args));
+        if (pid == 0) {
+            wrapper();
+            unreachable();
+        }
+        if (pid != INVALID_PID)
+            return pid;
+        if (errno != ENOSYS && errno != E2BIG)
+            throw SysError("unable to start a process in a cgroup");
+    }
+#endif
+
     if (options.cloneFlags) {
 #ifdef __linux__
         // Not supported, since then we don't know when to free the stack.
@@ -292,6 +316,15 @@ pid_t startProcess(fun<void()> processMain, const ProcessOptions & options)
 
     if (pid == INVALID_PID)
         throw SysError("unable to fork");
+
+#ifdef __linux__
+    if (options.cgroupFd != -1) {
+        AutoCloseFD procs = openat(options.cgroupFd, "cgroup.procs", O_WRONLY | O_CLOEXEC);
+        if (!procs)
+            throw SysError("opening cgroup.procs");
+        writeFull(procs.get(), fmt("%d", pid));
+    }
+#endif
 
     return pid;
 }

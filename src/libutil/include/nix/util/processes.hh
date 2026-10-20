@@ -123,6 +123,11 @@ struct ProcessOptions
      * use clone() with the specified flags (Linux only)
      */
     int cloneFlags = 0;
+    /**
+     * A cgroup directory to start the process in (Linux only), with
+     * `CLONE_INTO_CGROUP` where the kernel has it.
+     */
+    int cgroupFd = -1;
 };
 
 #ifndef _WIN32
