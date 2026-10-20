@@ -394,11 +394,14 @@ std::optional<Descriptor> UnixDerivationBuilderImpl::startBuild()
     /* Start a child process to build the derivation. */
     startChild();
 
+    return builderOut.get();
+}
+
+void UnixDerivationBuilderImpl::awaitSetup()
+{
     pid.setSeparatePG(true);
 
     processSandboxSetupMessages();
-
-    return builderOut.get();
 }
 
 PathsInChroot UnixDerivationBuilderImpl::getPathsInSandbox()

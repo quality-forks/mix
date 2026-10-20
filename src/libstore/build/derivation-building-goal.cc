@@ -1023,6 +1023,25 @@ Goal::Co<DerivationBuildingGoal::LocalBuildOutcome> DerivationBuildingGoal::buil
 
     actLock.reset();
 
+    {
+        /* Setting up the sandbox waits on the builder's namespaces and
+           mounts, so it runs on a thread while this goal holds its build slot. */
+        worker.childStarted(shared_from_this(), {}, true, false);
+        Finally releaseSlot([&] { worker.childTerminated(this, JobCategory::Build); });
+        std::jthread starting;
+        co_await AsyncCallback<std::monostate>{[&](Callback<std::monostate> callback) {
+            starting = std::jthread([callback = std::move(callback), builder = builder.get()]() mutable {
+                try {
+                    ReceiveInterrupts receiveInterrupts;
+                    builder->awaitSetup();
+                    callback(std::monostate{});
+                } catch (...) {
+                    callback.rethrow();
+                }
+            });
+        }};
+    }
+
     worker.childStarted(shared_from_this(), {builder->logChannel()}, true, true);
 
     started();

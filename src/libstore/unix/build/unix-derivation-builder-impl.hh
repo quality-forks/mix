@@ -143,6 +143,8 @@ public:
 
     std::optional<Descriptor> startBuild() override;
 
+    void awaitSetup() override;
+
     BuilderExit unprepareBuild() override;
 
     void cleanupBuild(bool force) override;
@@ -209,7 +211,8 @@ protected:
 
     /**
      * Called by prepareBuild() to start the child process for the
-     * build. Must set `pid`. The child must call runChild().
+     * build. Must set `pid`, or leave it to `awaitSetup`. The child must
+     * call runChild().
      */
     virtual void startChild();
 

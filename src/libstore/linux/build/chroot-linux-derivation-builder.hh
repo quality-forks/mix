@@ -13,6 +13,13 @@ struct ChrootLinuxDerivationBuilder : ChrootDerivationBuilder, LinuxDerivationBu
     Pipe userNamespaceSync;
 
     /**
+     * The process that clones the builder into its namespaces, and the
+     * pipe it sends the builder's pid on.
+     */
+    Pid helper;
+    Pipe sendPid;
+
+    /**
      * The mount namespace and user namespace of the builder, used to add additional
      * paths to the sandbox as a result of recursive Nix calls.
      */
@@ -51,6 +58,8 @@ struct ChrootLinuxDerivationBuilder : ChrootDerivationBuilder, LinuxDerivationBu
     void prepareSandbox() override;
 
     void startChild() override;
+
+    void awaitSetup() override;
 
     void enterChroot() override;
 

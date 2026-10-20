@@ -552,7 +552,6 @@ void ChrootLinuxDerivationBuilder::startChild()
 
     usingUserNamespace = userNamespacesSupported();
 
-    Pipe sendPid;
     sendPid.create();
 
     AutoCloseFD cgroupFd;
@@ -562,7 +561,7 @@ void ChrootLinuxDerivationBuilder::startChild()
             throw SysError("opening cgroup %s", PathFmt(*cgroup));
     }
 
-    Pid helper = startProcess([&]() {
+    helper = startProcess([&]() {
         sendPid.readSide.close();
 
         /* We need to open the slave early, before
@@ -600,7 +599,10 @@ void ChrootLinuxDerivationBuilder::startChild()
     });
 
     sendPid.writeSide.close();
+}
 
+void ChrootLinuxDerivationBuilder::awaitSetup()
+{
     if (auto status = helper.wait(); !statusOk(status)) {
         processSandboxSetupMessages();
         // Only reached if the child process didn't send an exception.
@@ -686,6 +688,8 @@ void ChrootLinuxDerivationBuilder::startChild()
     /* Signal the builder that we've updated its user namespace. */
     writeFull(userNamespaceSync.writeSide.get(), "1\n");
     userNamespaceSyncDone = true;
+
+    UnixDerivationBuilderImpl::awaitSetup();
 }
 
 void ChrootLinuxDerivationBuilder::enterChroot()

@@ -143,6 +143,7 @@ public:
     /* --- DerivationBuilder --- */
 
     std::optional<Descriptor> startBuild() override;
+    void awaitSetup() override {}
     BuilderExit unprepareBuild() override;
 
     void cleanupBuild(bool force) override

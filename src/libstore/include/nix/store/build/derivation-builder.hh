@@ -248,6 +248,12 @@ public:
     virtual std::optional<Descriptor> startBuild() = 0;
 
     /**
+     * Wait until the builder `startBuild` started has set up its sandbox,
+     * which takes long enough that this may run off the worker thread.
+     */
+    virtual void awaitSetup() = 0;
+
+    /**
      * Tear down build environment after the builder exits (either on
      * its own or if it is killed).
      *
