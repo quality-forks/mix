@@ -118,6 +118,9 @@ struct LocalStore::State::Stmts
     SQLiteStmt QueryValidDerivers;
     SQLiteStmt QueryDerivationOutputs;
     SQLiteStmt QueryRealisedOutput;
+    SQLiteStmt RegisterSettledResolution;
+    SQLiteStmt QuerySettledResolution;
+    SQLiteStmt ClearSettledResolutions;
     SQLiteStmt QueryPathFromHashPart;
     SQLiteStmt QueryValidPaths;
 };
@@ -408,6 +411,14 @@ LocalStore::LocalStore(ref<const Config> config)
                     where drvPath = ? and outputName = ?
                     ;
             )");
+        if (!config->readOnly) {
+            state->stmts->RegisterSettledResolution.create(
+                state->db,
+                "insert or ignore into SettledResolutions (drvPath, resolvedPath, outputs) values (?, ?, ?);");
+            state->stmts->QuerySettledResolution.create(
+                state->db, "select resolvedPath, outputs from SettledResolutions where drvPath = ?;");
+            state->stmts->ClearSettledResolutions.create(state->db, "delete from SettledResolutions;");
+        }
     }
 }
 
@@ -650,6 +661,9 @@ bool LocalStore::upgradeDBSchema(State & state, bool dryRun)
             {
 #embed "ca-specific-schema.sql"
             });
+        maybeUpgrade(
+            "20261022-settled-resolutions",
+            "create table if not exists SettledResolutions (drvPath text primary key not null, resolvedPath text not null, outputs text not null)");
     }
 
     maybeUpgrade("20260309-drop-redundant-indexreferrer", "drop index if exists IndexReferrer");
@@ -733,7 +747,39 @@ void LocalStore::deleteBuildTraces(const std::set<DrvOutput> & keys)
         for (const auto & key : keys) {
             state->stmts->DeleteRealisedOutputByName.use().apply(key.drvPath.to_string()).apply(key.outputName).exec();
         }
+        if (!config->readOnly)
+            state->stmts->ClearSettledResolutions.use().exec();
         txn.commit();
+    });
+}
+
+std::optional<SettledResolution> LocalStore::querySettledResolution(const StorePath & drvPath)
+{
+    if (config->readOnly || !experimentalFeatureSettings.isEnabled(Xp::CaDerivations))
+        return std::nullopt;
+    return retrySQLite<std::optional<SettledResolution>>([&]() -> std::optional<SettledResolution> {
+        auto state(_state->lock());
+        auto query(state->stmts->QuerySettledResolution.use().apply(drvPath.to_string()));
+        if (!query.next())
+            return std::nullopt;
+        return SettledResolution{
+            .path = StorePath(query.getStr(0)),
+            .outputs = tokenizeString<std::vector<std::string>>(query.getStr(1)),
+        };
+    });
+}
+
+void LocalStore::registerSettledResolution(const StorePath & drvPath, const SettledResolution & resolution)
+{
+    if (config->readOnly || !experimentalFeatureSettings.isEnabled(Xp::CaDerivations))
+        return;
+    retrySQLite<void>([&]() {
+        auto state(_state->lock());
+        state->stmts->RegisterSettledResolution.use()
+            .apply(drvPath.to_string())
+            .apply(resolution.path.to_string())
+            .apply(concatStringsSep(" ", resolution.outputs))
+            .exec();
     });
 }
 

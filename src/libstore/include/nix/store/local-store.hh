@@ -31,6 +31,17 @@ struct OptimiseStats
     uint64_t bytesFreed = 0;
 };
 
+/**
+ * A derivation resolved with every input realised, valid until a build
+ * trace is deleted. Local only, since resolutions from different stores
+ * may disagree.
+ */
+struct SettledResolution
+{
+    StorePath path;
+    std::vector<std::string> outputs;
+};
+
 struct LocalSettings;
 
 struct LocalBuildStoreConfig : virtual LocalFSStoreConfig
@@ -361,6 +372,10 @@ public:
     void collectGarbage(const GCOptions & options, GCResults & results) override;
 
     void deleteBuildTraces(const std::set<DrvOutput> & keys) override;
+
+    std::optional<SettledResolution> querySettledResolution(const StorePath & drvPath);
+
+    void registerSettledResolution(const StorePath & drvPath, const SettledResolution & resolution);
 
     /**
      * Called by `collectGarbage` to trace in reverse.

@@ -2,6 +2,7 @@
 #include "nix/store/derivations.hh"
 #include "nix/store/derivation/resolution.hh"
 #include "nix/store/realisation.hh"
+#include "nix/store/local-store.hh"
 #include "nix/util/util.hh"
 #include "nix/util/sync.hh"
 
@@ -141,12 +142,19 @@ static Resolved resolveDerivation(
     if (auto it = caches.resolved.find(drvPath); it != caches.resolved.end())
         return it->second;
 
+    auto * localStore = caches.store ? dynamic_cast<LocalStore *>(&store) : nullptr;
     if (caches.store) {
         auto settled_(settled.lock());
         if (auto known = settled_->find(*caches.store); known != settled_->end())
             if (auto it = known->second.find(drvPath); it != known->second.end())
                 return caches.resolved.emplace(drvPath, it->second).first->second;
     }
+    if (localStore)
+        if (auto kept = localStore->querySettledResolution(drvPath)) {
+            Resolved result{std::move(kept->path), std::move(kept->outputs)};
+            (*settled.lock())[*caches.store].emplace(drvPath, result);
+            return caches.resolved.emplace(drvPath, std::move(result)).first->second;
+        }
 
     auto & evalStore = evalStore_ ? *evalStore_ : store;
 
@@ -178,8 +186,11 @@ static Resolved resolveDerivation(
     Resolved result{computeStorePath(store, drv), {}};
     for (auto & [outputName, _] : drv.outputs)
         result.outputs.push_back(outputName);
-    if (complete && caches.store)
+    if (complete && caches.store) {
         (*settled.lock())[*caches.store].emplace(drvPath, result);
+        if (localStore)
+            localStore->registerSettledResolution(drvPath, {result.path, result.outputs});
+    }
     return caches.resolved.emplace(drvPath, std::move(result)).first->second;
 }
 

@@ -8,6 +8,7 @@
 #include "nix/store/common-protocol.hh"
 #include "nix/store/common-protocol-impl.hh" // Don't remove is actually needed
 #include "nix/store/outputs-query.hh"
+#include "nix/store/local-store.hh"
 
 #include <sys/types.h>
 #include <fcntl.h>
@@ -167,6 +168,13 @@ Goal::Co<BuildResult> DerivationGoal::haveDerivation(bool storeDerivation)
 
     if (resolutionGoal->resolvedDrv) {
         auto & [pathResolved, drvResolved] = *resolutionGoal->resolvedDrv;
+
+        if (auto * localStore = dynamic_cast<LocalStore *>(&worker.store)) {
+            SettledResolution settled{pathResolved, {}};
+            for (auto & [outputName, _] : drvResolved.outputs)
+                settled.outputs.push_back(outputName);
+            localStore->registerSettledResolution(drvPath, settled);
+        }
 
         auto resolvedDrvGoal = worker.makeDerivationGoal(
             pathResolved,
@@ -437,6 +445,8 @@ std::optional<std::pair<UnkeyedRealisation, PathStatus>> DerivationGoal::checkPa
             "derivation '%s' does not have wanted outputs '%s'", worker.store.printStorePath(drvPath), wantedOutput);
     }
 
+    bool settled = false;
+
     if (experimentalFeatureSettings.isEnabled(Xp::CaDerivations)) {
         for (auto * drvStore : {&worker.evalStore, &worker.store}) {
             if (auto real = drvStore->queryRealisation(drvOutput)) {
@@ -444,6 +454,16 @@ std::optional<std::pair<UnkeyedRealisation, PathStatus>> DerivationGoal::checkPa
                 break;
             }
         }
+
+        /* Realisations are keyed by the resolved derivation, and one an
+           earlier build resolved finds it without realising and rewriting
+           every input again. */
+        if (auto * localStore = dynamic_cast<LocalStore *>(&worker.store); !mRealisation && localStore)
+            if (auto resolution = localStore->querySettledResolution(drvPath))
+                if (auto real = localStore->queryRealisation(DrvOutput{resolution->path, wantedOutput})) {
+                    mRealisation = *real;
+                    settled = true;
+                }
     }
 
     if (mRealisation) {
@@ -453,7 +473,7 @@ std::optional<std::pair<UnkeyedRealisation, PathStatus>> DerivationGoal::checkPa
                             : !checkHash || worker.pathContentsGood(outputPath) ? PathStatus::Valid
                                                                                 : PathStatus::Corrupt;
 
-        if (experimentalFeatureSettings.isEnabled(Xp::CaDerivations) && status == PathStatus::Valid) {
+        if (experimentalFeatureSettings.isEnabled(Xp::CaDerivations) && status == PathStatus::Valid && !settled) {
             // We know the output because it's a static output of the
             // derivation, and the output path is valid, but we don't have
             // its realisation stored (probably because it has been built
