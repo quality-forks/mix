@@ -9,6 +9,16 @@
 
 namespace nix {
 
+struct BuiltinBuilderContext;
+
+/**
+ * Read the netrc and CA bundle that `builtin:fetchurl` needs, before a
+ * sandbox hides them.
+ */
+void readFetchurlSecrets(BuiltinBuilderContext & ctx);
+
+[[noreturn]] void runBuiltinBuilder(const BuiltinBuilderContext & ctx);
+
 /**
  * This class represents the state for building locally on Unix.
  *
@@ -203,6 +213,11 @@ protected:
     {
         return Strings({store->printStorePath(drvPath)});
     }
+
+    /**
+     * Open the slave side of the pseudoterminal in raw mode.
+     */
+    AutoCloseFD openRawSlave();
 
     /**
      * Open the slave side of the pseudoterminal and use it as stderr.

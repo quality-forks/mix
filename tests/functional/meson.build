@@ -21,6 +21,7 @@ busybox = find_program('busybox', native : true, required : false)
 # guaranteed to exist either.
 coreutils = find_program('ls', native : true)
 dot = find_program('dot', native : true, required : false)
+sandbox_helper = find_program('nix-sandbox-helper', required : false)
 
 nix_bin_dir = fs.parent(nix.full_path())
 
@@ -268,7 +269,7 @@ foreach suite : suites
         'TEST_NAME' : name,
         'NIX_REMOTE' : '',
         'PS4' : '+(${BASH_SOURCE[0]-$0}:$LINENO) ',
-      } + suite.get('env', {}),
+      } + (sandbox_helper.found() ? { '_NIX_SANDBOX_HELPER' : sandbox_helper.full_path() } : {}) + suite.get('env', {}),
       # Some tests take 15+ seconds even on an otherwise idle machine;
       # on a loaded machine this can easily drive them to failure. Give
       # them more time than the default of 30 seconds.

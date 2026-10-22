@@ -81,14 +81,23 @@ this_exe = executable(
   cpp_pch : do_pch ? [ 'pch/precompiled-headers.hh' ] : [],
 )
 
+test_env = {
+  '_NIX_TEST_UNIT_DATA' : meson.current_source_dir() / 'data',
+  'HOME' : meson.current_build_dir() / 'test-home',
+  'NIX_STORE' : '',
+}
+
+sandbox_helper = find_program('nix-sandbox-helper', required : false)
+if sandbox_helper.found()
+  test_env += {
+    '_NIX_SANDBOX_HELPER' : sandbox_helper.full_path(),
+  }
+endif
+
 test(
   meson.project_name(),
   this_exe,
-  env : {
-    '_NIX_TEST_UNIT_DATA' : meson.current_source_dir() / 'data',
-    'HOME' : meson.current_build_dir() / 'test-home',
-    'NIX_STORE' : '',
-  },
+  env : test_env,
   protocol : 'gtest',
 )
 

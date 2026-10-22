@@ -225,6 +225,7 @@ endif
 # by joining it with prefix, unless it was already an absolute path
 # (which is the default for store-dir, localstatedir, and log-dir).
 configdata_priv.set_quoted('NIX_STORE_DIR', store_dir)
+configdata_priv.set_quoted('NIX_SANDBOX_HELPER', libexecdir / 'nix-sandbox-helper')
 # On Windows, NIX_STATE_DIR, NIX_LOG_DIR, and NIX_CONF_DIR are determined at
 # runtime using the Windows known folders API (FOLDERID_ProgramData), so we
 # don't define them at compile time.
@@ -384,6 +385,19 @@ this_library = library(
 )
 
 install_headers(headers, subdir : 'nix/store', preserve_path : true)
+
+if host_machine.system() == 'linux'
+  sandbox_helper = executable(
+    'nix-sandbox-helper',
+    'linux/sandbox-helper-main.cc',
+    include_directories : include_dirs,
+    link_with : this_library,
+    dependencies : deps_public + deps_public_no_pkgconfig,
+    install : true,
+    install_dir : libexecdir,
+  )
+  meson.override_find_program('nix-sandbox-helper', sandbox_helper)
+endif
 
 libraries_private = []
 

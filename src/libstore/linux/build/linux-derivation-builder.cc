@@ -8,12 +8,18 @@
 #include "nix/store/globals.hh"
 #include "nix/store/personality.hh"
 #include "nix/store/filetransfer.hh"
+#include "nix/store/builtins.hh"
+#include "unix/build/child-impl.hh"
+#include "nix/util/config-global.hh"
+#include "nix/util/environment-variables.hh"
+#include "nix/util/processes.hh"
 #include "nix/util/cgroup.hh"
 #include "nix/util/linux-namespaces.hh"
 #include "nix/util/file-system-at.hh"
 #include "nix/util/logging.hh"
 #include "nix/util/serialise.hh"
 #include "linux/fchmodat2-compat.hh"
+#include "sandbox-helper.hh"
 
 #include <algorithm>
 #include <string_view>
@@ -30,6 +36,7 @@
 #include <sys/mount.h>
 #include <sys/syscall.h>
 #include <sys/prctl.h>
+#include <sys/resource.h>
 #include <grp.h>
 
 #if HAVE_SECCOMP
@@ -76,9 +83,9 @@ static int move_mount(int sourceDirFd, const char * source, int destDirFd, const
 
 namespace nix {
 
-void setupSeccomp(const LocalSettings & localSettings)
+void setupSeccomp(bool filterSyscalls, bool allowNewPrivileges)
 {
-    if (!localSettings.filterSyscalls)
+    if (!filterSyscalls)
         return;
 
 #if HAVE_SECCOMP
@@ -166,7 +173,7 @@ void setupSeccomp(const LocalSettings & localSettings)
         || seccomp_rule_add(ctx, SCMP_ACT_ERRNO(ENOTSUP), SCMP_SYS(fsetxattr), 0) != 0)
         throw SysError("unable to add seccomp rule");
 
-    if (seccomp_attr_set(ctx, SCMP_FLTATR_CTL_NNP, localSettings.allowNewPrivileges ? 0 : 1) != 0)
+    if (seccomp_attr_set(ctx, SCMP_FLTATR_CTL_NNP, allowNewPrivileges ? 0 : 1) != 0)
         throw SysError("unable to set 'no new privileges' seccomp attribute");
 
     if (seccomp_load(ctx) != 0)
@@ -396,20 +403,19 @@ static void doBind(
 
 static const std::filesystem::path procPath = "/proc";
 
-void LinuxDerivationBuilder::enterChroot()
+static void
+restrictProcess(bool allowNewPrivileges, bool filterSyscalls, const std::string & platform)
 {
     using namespace linux;
-
-    auto & localSettings = store->getLocalSettings();
 
     /* Set the NO_NEW_PRIVS before doing seccomp/landlock setup.
        landlock_restrict_self requires either NO_NEW_PRIVS or CAP_SYS_ADMIN.
        With user namespaces we do get CAP_SYS_ADMIN. */
-    if (!localSettings.allowNewPrivileges)
+    if (!allowNewPrivileges)
         if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == -1)
             throw SysError("failed to set PR_SET_NO_NEW_PRIVS");
 
-    setupSeccomp(localSettings);
+    setupSeccomp(filterSyscalls, allowNewPrivileges);
 
 #if DO_LANDLOCK
     try {
@@ -424,12 +430,183 @@ void LinuxDerivationBuilder::enterChroot()
 #endif
 
     setPersonality({
-        .system = drv.platform,
+        .system = platform,
         /* For improved determinism. This assumes that we don't care about security benefits it provides,
            which might not be exactly true in case of FODs that download content the internet. */
         .disableASLR = true,
     });
 }
+
+void LinuxDerivationBuilder::enterChroot()
+{
+    auto & localSettings = store->getLocalSettings();
+    restrictProcess(localSettings.allowNewPrivileges, localSettings.filterSyscalls, drv.platform);
+}
+
+namespace {
+
+/**
+ * The descriptors the sandbox helper starts with, besides the
+ * pseudoterminal on its standard error.
+ */
+enum HelperFd : Descriptor {
+    specFd = 3,
+    userNamespaceFd = 4,
+    sendPidFd = 5,
+    cgroupDirFd = 6,
+};
+
+struct SandboxBuiltin
+{
+    nlohmann::json drv;
+    std::map<std::string, std::string> outputs;
+    Strings hashedMirrors;
+    /**
+     * The settings that differ from their defaults, which the builtins
+     * read as globals.
+     */
+    std::map<std::string, std::string> settings;
+#if NIX_WITH_AWS_AUTH
+    std::optional<AwsCredentials> awsCredentials;
+#endif
+};
+
+struct SandboxSpec
+{
+    Verbosity verbosity;
+    bool requireDropSupplementaryGroups;
+    bool userNamespace;
+    bool privateNetwork;
+    bool cgroup;
+    std::filesystem::path chrootRootDir;
+    std::string storeDir;
+    PathsInChroot pathsInChroot;
+    bool kvm;
+    std::optional<std::filesystem::path> caFile;
+    bool mountSys;
+    std::string shmSize;
+    bool lockEtc;
+    bool allowNewPrivileges;
+    bool filterSyscalls;
+    std::string platform;
+    std::filesystem::path tmpDirInSandbox;
+    uid_t uid;
+    gid_t gid;
+    std::string builder;
+    Strings args;
+    Strings env;
+    std::optional<SandboxBuiltin> builtin;
+};
+
+nlohmann::json toJson(const SandboxSpec & spec)
+{
+    auto pathsInChroot = nlohmann::json::array();
+    for (auto & [target, path] : spec.pathsInChroot)
+        pathsInChroot.push_back(
+            {{"target", target.native()}, {"source", path.source.native()}, {"optional", path.optional}});
+
+    nlohmann::json json{
+        {"verbosity", spec.verbosity},
+        {"requireDropSupplementaryGroups", spec.requireDropSupplementaryGroups},
+        {"userNamespace", spec.userNamespace},
+        {"privateNetwork", spec.privateNetwork},
+        {"cgroup", spec.cgroup},
+        {"chrootRootDir", spec.chrootRootDir.native()},
+        {"storeDir", spec.storeDir},
+        {"pathsInChroot", std::move(pathsInChroot)},
+        {"kvm", spec.kvm},
+        {"caFile", spec.caFile ? nlohmann::json(spec.caFile->native()) : nlohmann::json()},
+        {"mountSys", spec.mountSys},
+        {"shmSize", spec.shmSize},
+        {"lockEtc", spec.lockEtc},
+        {"allowNewPrivileges", spec.allowNewPrivileges},
+        {"filterSyscalls", spec.filterSyscalls},
+        {"platform", spec.platform},
+        {"tmpDirInSandbox", spec.tmpDirInSandbox.native()},
+        {"uid", spec.uid},
+        {"gid", spec.gid},
+        {"builder", spec.builder},
+        {"args", spec.args},
+        {"env", spec.env},
+    };
+
+    if (auto & builtin = spec.builtin) {
+        json["builtin"] = {
+            {"drv", builtin->drv},
+            {"outputs", builtin->outputs},
+            {"hashedMirrors", builtin->hashedMirrors},
+            {"settings", builtin->settings},
+        };
+#if NIX_WITH_AWS_AUTH
+        if (auto & credentials = builtin->awsCredentials)
+            json["builtin"]["awsCredentials"] = {
+                {"accessKeyId", credentials->accessKeyId},
+                {"secretAccessKey", credentials->secretAccessKey},
+                {"sessionToken",
+                 credentials->sessionToken ? nlohmann::json(*credentials->sessionToken) : nlohmann::json()},
+            };
+#endif
+    }
+
+    return json;
+}
+
+SandboxSpec sandboxSpecFromJson(const nlohmann::json & json)
+{
+    PathsInChroot pathsInChroot;
+    for (auto & path : json.at("pathsInChroot"))
+        pathsInChroot.emplace(
+            path.at("target").get<std::string>(),
+            ChrootPath{.source = path.at("source").get<std::string>(), .optional = path.at("optional")});
+
+    std::optional<SandboxBuiltin> builtin;
+    if (auto found = json.find("builtin"); found != json.end()) {
+        builtin = SandboxBuiltin{
+            .drv = found->at("drv"),
+            .outputs = found->at("outputs"),
+            .hashedMirrors = found->at("hashedMirrors"),
+            .settings = found->at("settings"),
+        };
+#if NIX_WITH_AWS_AUTH
+        if (auto credentials = found->find("awsCredentials"); credentials != found->end()) {
+            auto & token = credentials->at("sessionToken");
+            builtin->awsCredentials = AwsCredentials(
+                credentials->at("accessKeyId"),
+                credentials->at("secretAccessKey"),
+                token.is_null() ? std::nullopt : std::optional<std::string>(token));
+        }
+#endif
+    }
+
+    auto & caFile = json.at("caFile");
+    return SandboxSpec{
+        .verbosity = json.at("verbosity"),
+        .requireDropSupplementaryGroups = json.at("requireDropSupplementaryGroups"),
+        .userNamespace = json.at("userNamespace"),
+        .privateNetwork = json.at("privateNetwork"),
+        .cgroup = json.at("cgroup"),
+        .chrootRootDir = json.at("chrootRootDir").get<std::string>(),
+        .storeDir = json.at("storeDir"),
+        .pathsInChroot = std::move(pathsInChroot),
+        .kvm = json.at("kvm"),
+        .caFile = caFile.is_null() ? std::nullopt : std::optional<std::filesystem::path>(caFile.get<std::string>()),
+        .mountSys = json.at("mountSys"),
+        .shmSize = json.at("shmSize"),
+        .lockEtc = json.at("lockEtc"),
+        .allowNewPrivileges = json.at("allowNewPrivileges"),
+        .filterSyscalls = json.at("filterSyscalls"),
+        .platform = json.at("platform"),
+        .tmpDirInSandbox = json.at("tmpDirInSandbox").get<std::string>(),
+        .uid = json.at("uid"),
+        .gid = json.at("gid"),
+        .builder = json.at("builder"),
+        .args = json.at("args"),
+        .env = json.at("env"),
+        .builtin = std::move(builtin),
+    };
+}
+
+} // namespace
 
 uid_t ChrootLinuxDerivationBuilder::sandboxUid()
 {
@@ -508,12 +685,6 @@ void ChrootLinuxDerivationBuilder::prepareSandbox()
 
 void ChrootLinuxDerivationBuilder::startChild()
 {
-    RunChildArgs args{
-#if NIX_WITH_AWS_AUTH
-        .awsCredentials = preResolveAwsCredentials(),
-#endif
-    };
-
     /* Set up private namespaces for the build:
 
         - The PID namespace causes the build to start as PID 1.
@@ -545,7 +716,9 @@ void ChrootLinuxDerivationBuilder::startChild()
        clone() being broken in multi-threaded programs due to
        at-fork handlers not being run. Note that we use
        CLONE_PARENT to ensure that the real builder is parented to
-       us.
+       us. A fork of the daemon would copy its page tables and hold
+       the output locks of other goals, so the helper is a separate
+       program.
     */
 
     userNamespaceSync.create();
@@ -561,42 +734,82 @@ void ChrootLinuxDerivationBuilder::startChild()
             throw SysError("opening cgroup %s", PathFmt(*cgroup));
     }
 
-    helper = startProcess([&]() {
-        sendPid.readSide.close();
+    auto & localSettings = store->getLocalSettings();
 
-        /* We need to open the slave early, before
-           CLONE_NEWUSER. Otherwise we get EPERM when running as
-           root. */
-        openSlave();
+    SandboxSpec spec{
+        .verbosity = verbosity,
+        .requireDropSupplementaryGroups = localSettings.requireDropSupplementaryGroups,
+        .userNamespace = usingUserNamespace,
+        .privateNetwork = derivationType.isSandboxed(),
+        .cgroup = bool(cgroup),
+        .chrootRootDir = chrootRootDir,
+        .storeDir = store->storeDir,
+        .pathsInChroot = pathsInChroot,
+        .kvm = systemFeatures.count("kvm") > 0,
+        .caFile = fileTransferSettings.caFile.get(),
+        .mountSys = buildUser && buildUser->getUIDCount() != 1,
+        .shmSize = localSettings.sandboxShmSize,
+        .lockEtc = !drvOptions.useUidRange(drv),
+        .allowNewPrivileges = localSettings.allowNewPrivileges,
+        .filterSyscalls = localSettings.filterSyscalls,
+        .platform = drv.platform,
+        .tmpDirInSandbox = tmpDirInSandbox(),
+        .uid = sandboxUid(),
+        .gid = sandboxGid(),
+        .builder = drv.builder,
+    };
 
-        try {
-            /* Drop additional groups here because we can't do it
-               after we've created the new user namespace. */
-            if (setgroups(0, 0) == -1) {
-                if (errno != EPERM)
-                    throw SysError("setgroups failed");
-                if (store->getLocalSettings().requireDropSupplementaryGroups)
-                    throw Error(
-                        "setgroups failed. Set the require-drop-supplementary-groups option to false to skip this step.");
-            }
+    if (drv.isBuiltin()) {
+        std::map<std::string, AbstractConfig::SettingInfo> overridden;
+        globalConfig.getSettings(overridden, true);
 
-            ProcessOptions options;
-            options.cgroupFd = cgroupFd.get();
-            options.cloneFlags = CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWIPC | CLONE_NEWUTS | CLONE_PARENT | SIGCHLD;
-            if (derivationType.isSandboxed())
-                options.cloneFlags |= CLONE_NEWNET;
-            if (usingUserNamespace)
-                options.cloneFlags |= CLONE_NEWUSER;
+        auto & builtin = spec.builtin.emplace(
+            SandboxBuiltin{
+                .drv = drv,
+                .hashedMirrors = localSettings.hashedMirrors,
+#if NIX_WITH_AWS_AUTH
+                .awsCredentials = preResolveAwsCredentials(),
+#endif
+            });
+        for (auto & [name, setting] : overridden)
+            builtin.settings.emplace(name, setting.value);
+        for (auto & [name, _] : drv.outputs)
+            builtin.outputs.emplace(name, store->printStorePath(scratchOutputs.at(name)));
+    } else {
+        spec.args.push_back(std::string(baseNameOf(drv.builder)));
+        for (auto & arg : drv.args)
+            spec.args.push_back(rewriteStrings(arg, inputRewrites));
+        for (auto & [name, value] : env)
+            spec.env.push_back(rewriteStrings(name + "=" + value, inputRewrites));
+    }
 
-            pid_t child = startProcess([this, args = std::move(args)]() { runChild(std::move(args)); }, options);
+    AutoCloseFD specFile = memfd_create("nix-sandbox-spec", MFD_CLOEXEC);
+    if (!specFile)
+        throw SysError("creating the sandbox spec");
+    writeFull(specFile.get(), toJson(spec).dump());
+    if (lseek(specFile.get(), 0, SEEK_SET) == -1)
+        throw SysError("rewinding the sandbox spec");
 
-            writeFull(sendPid.writeSide.get(), fmt("%d\n", child));
-            _exit(0);
-        } catch (...) {
-            handleChildException(true);
-            _exit(1);
-        }
-    });
+    /* We need to open the slave early, before
+       CLONE_NEWUSER. Otherwise we get EPERM when running as
+       root. */
+    auto slave = openRawSlave();
+    std::vector<FdRedirection> fds{
+        {slave.get(), STDERR_FILENO},
+        {specFile.get(), specFd},
+        {userNamespaceSync.readSide.get(), userNamespaceFd},
+        {sendPid.writeSide.get(), sendPidFd},
+    };
+    if (cgroupFd)
+        fds.push_back({cgroupFd.get(), cgroupDirFd});
+
+    helper = spawnProgram(
+        {
+            .program = getEnvNonEmpty("_NIX_SANDBOX_HELPER").value_or(NIX_SANDBOX_HELPER),
+            .lookupPath = false,
+            .restoreMounts = false,
+        },
+        fds);
 
     sendPid.writeSide.close();
 }
@@ -692,16 +905,18 @@ void ChrootLinuxDerivationBuilder::awaitSetup()
     UnixDerivationBuilderImpl::awaitSetup();
 }
 
-void ChrootLinuxDerivationBuilder::enterChroot()
+static void enterSandbox(SandboxSpec & spec)
 {
-    userNamespaceSync.writeSide = -1;
+    {
+        AutoCloseFD userNamespaceSync = userNamespaceFd;
+        if (readLine(userNamespaceSync.get()) != "1")
+            throw Error("user namespace initialisation failed");
+    }
 
-    if (readLine(userNamespaceSync.readSide.get()) != "1")
-        throw Error("user namespace initialisation failed");
+    auto & chrootRootDir = spec.chrootRootDir;
+    auto & pathsInChroot = spec.pathsInChroot;
 
-    userNamespaceSync.readSide = -1;
-
-    if (derivationType.isSandboxed()) {
+    if (spec.privateNetwork) {
 
         /* Initialise the loopback interface. */
         AutoCloseFD fd(socket(PF_INET, SOCK_DGRAM, IPPROTO_IP));
@@ -748,7 +963,7 @@ void ChrootLinuxDerivationBuilder::enterChroot()
 
        Marking chrootRootDir as MS_SHARED causes pivot_root()
        to fail with EINVAL. Don't know why. */
-    std::filesystem::path chrootStoreDir = chrootRootDir / std::filesystem::path(store->storeDir).relative_path();
+    std::filesystem::path chrootStoreDir = chrootRootDir / std::filesystem::path(spec.storeDir).relative_path();
 
     if (mount(chrootStoreDir.c_str(), chrootStoreDir.c_str(), 0, MS_BIND, 0) == -1)
         throw SysError("unable to bind mount the Nix store at %1%", PathFmt(chrootStoreDir));
@@ -763,7 +978,7 @@ void ChrootLinuxDerivationBuilder::enterChroot()
         createDirs(chrootRootDir / "dev" / "shm");
         createDirs(chrootRootDir / "dev" / "pts");
         ss.push_back("/dev/full");
-        if (systemFeatures.count("kvm")) {
+        if (spec.kvm) {
             if (pathExists("/dev/kvm")) {
                 ss.push_back("/dev/kvm");
             } else {
@@ -787,7 +1002,7 @@ void ChrootLinuxDerivationBuilder::enterChroot()
     /* Fixed-output derivations typically need to access the
        network, so give them access to /etc/resolv.conf and so
        on. */
-    if (!derivationType.isSandboxed()) {
+    if (!spec.privateNetwork) {
         // Only use nss functions to resolve hosts and
         // services. Don’t use it for anything else that may
         // be configured for this system. This limits the
@@ -801,7 +1016,7 @@ void ChrootLinuxDerivationBuilder::enterChroot()
             if (pathExists(path))
                 ss.push_back(path);
 
-        if (auto & caFile = fileTransferSettings.caFile.get()) {
+        if (auto & caFile = spec.caFile) {
             if (pathExists(*caFile))
                 pathsInChroot.try_emplace(
                     "/etc/ssl/certs/ca-certificates.crt", canonPath(caFile->native(), true), true);
@@ -848,7 +1063,7 @@ void ChrootLinuxDerivationBuilder::enterChroot()
         throw SysError("mounting /proc");
 
     /* Mount sysfs on /sys. */
-    if (buildUser && buildUser->getUIDCount() != 1) {
+    if (spec.mountSys) {
         createDirs(chrootRootDir / "sys");
         if (mount("none", (chrootRootDir / "sys").c_str(), "sysfs", 0, 0) == -1)
             throw SysError("mounting /sys");
@@ -857,12 +1072,7 @@ void ChrootLinuxDerivationBuilder::enterChroot()
     /* Mount a new tmpfs on /dev/shm to ensure that whatever
        the builder puts in /dev/shm is cleaned up automatically. */
     if (pathExists("/dev/shm")
-        && mount(
-               "none",
-               (chrootRootDir / "dev" / "shm").c_str(),
-               "tmpfs",
-               0,
-               fmt("size=%s", store->getLocalSettings().sandboxShmSize).c_str())
+        && mount("none", (chrootRootDir / "dev" / "shm").c_str(), "tmpfs", 0, fmt("size=%s", spec.shmSize).c_str())
                == -1)
         throw SysError("mounting /dev/shm");
 
@@ -887,7 +1097,7 @@ void ChrootLinuxDerivationBuilder::enterChroot()
     }
 
     /* Make /etc unwritable */
-    if (!drvOptions.useUidRange(drv))
+    if (spec.lockEtc)
         chmod(chrootRootDir / "etc", 0555);
 
     /* Unshare this mount namespace. This is necessary because
@@ -906,7 +1116,7 @@ void ChrootLinuxDerivationBuilder::enterChroot()
     /* Unshare the cgroup namespace. This means
        /proc/self/cgroup will show the child's cgroup as '/'
        rather than whatever it is in the parent. */
-    if (cgroup && unshare(CLONE_NEWCGROUP) == -1)
+    if (spec.cgroup && unshare(CLONE_NEWCGROUP) == -1)
         throw SysError("unsharing cgroup namespace");
 
     /* Do the chroot(). */
@@ -928,20 +1138,118 @@ void ChrootLinuxDerivationBuilder::enterChroot()
     if (rmdir("real-root") == -1)
         throw SysError("cannot remove real-root directory");
 
-    LinuxDerivationBuilder::enterChroot();
+    restrictProcess(spec.allowNewPrivileges, spec.filterSyscalls, spec.platform);
 }
 
-void ChrootLinuxDerivationBuilder::setUser()
+[[noreturn]] static void runSandboxed(SandboxSpec & spec)
 {
-    preserveDeathSignal([this]() {
-        /* Switch to the sandbox uid/gid in the user namespace,
-           which corresponds to the build user or calling user in
-           the parent namespace. */
-        if (setgid(sandboxGid()) == -1)
-            throw SysError("setgid failed");
-        if (setuid(sandboxUid()) == -1)
-            throw SysError("setuid failed");
-    });
+    bool sendException = true;
+
+    try {
+        commonChildInit();
+
+        std::optional<BasicDerivation> drv;
+        std::optional<BuiltinBuilderContext> ctx;
+        if (auto & builtin = spec.builtin) {
+            drv = nlohmann::adl_serializer<BasicDerivation>::from_json(builtin->drv);
+            ctx.emplace(
+                BuiltinBuilderContext{
+                    .drv = *drv,
+                    .outputs = builtin->outputs,
+                    .hashedMirrors = builtin->hashedMirrors,
+                    .tmpDirInSandbox = spec.tmpDirInSandbox,
+#if NIX_WITH_AWS_AUTH
+                    .awsCredentials = builtin->awsCredentials,
+#endif
+                });
+            readFetchurlSecrets(*ctx);
+        }
+
+        enterSandbox(spec);
+
+        if (chdir(spec.tmpDirInSandbox.c_str()) == -1)
+            throw SysError("changing into %1%", PathFmt(spec.tmpDirInSandbox));
+
+        unix::closeExtraFDs();
+
+        struct rlimit limit = {0, RLIM_INFINITY};
+        setrlimit(RLIMIT_CORE, &limit);
+
+        umask(0022);
+
+        preserveDeathSignal([&]() {
+            /* Switch to the sandbox uid/gid in the user namespace,
+               which corresponds to the build user or calling user in
+               the parent namespace. */
+            if (setgid(spec.gid) == -1)
+                throw SysError("setgid failed");
+            if (setuid(spec.uid) == -1)
+                throw SysError("setuid failed");
+        });
+
+        writeFull(STDERR_FILENO, std::string("\2\n"));
+
+        sendException = false;
+
+        if (ctx)
+            runBuiltinBuilder(*ctx);
+
+        execve(requireCString(spec.builder), stringsToCharPtrs(spec.args).data(), stringsToCharPtrs(spec.env).data());
+
+        throw SysError("executing '%1%'", spec.builder);
+
+    } catch (...) {
+        handleChildException(sendException);
+        _exit(1);
+    }
+}
+
+void sandboxHelperMain()
+{
+    logger = makeSimpleLogger().release();
+
+    try {
+        auto spec = [] {
+            AutoCloseFD specFile = specFd;
+            return sandboxSpecFromJson(nlohmann::json::parse(drainFD(specFile.get())));
+        }();
+        verbosity = spec.verbosity;
+
+        if (spec.builtin) {
+            /* The builtins read their settings as globals and may need
+               the NSS libraries, which a chroot hides. */
+            initLibStore(false);
+            for (auto & [name, value] : spec.builtin->settings)
+                globalConfig.set(name, value);
+        }
+
+        /* Drop additional groups here because we can't do it
+           after we've created the new user namespace. */
+        if (setgroups(0, 0) == -1) {
+            if (errno != EPERM)
+                throw SysError("setgroups failed");
+            if (spec.requireDropSupplementaryGroups)
+                throw Error(
+                    "setgroups failed. Set the require-drop-supplementary-groups option to false to skip this step.");
+        }
+
+        ProcessOptions options;
+        if (spec.cgroup)
+            options.cgroupFd = cgroupDirFd;
+        options.cloneFlags = CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWIPC | CLONE_NEWUTS | CLONE_PARENT | SIGCHLD;
+        if (spec.privateNetwork)
+            options.cloneFlags |= CLONE_NEWNET;
+        if (spec.userNamespace)
+            options.cloneFlags |= CLONE_NEWUSER;
+
+        pid_t child = startProcess([&]() { runSandboxed(spec); }, options);
+
+        writeFull(sendPidFd, fmt("%d\n", child));
+        _exit(0);
+    } catch (...) {
+        handleChildException(true);
+        _exit(1);
+    }
 }
 
 BuilderExit ChrootLinuxDerivationBuilder::unprepareBuild()

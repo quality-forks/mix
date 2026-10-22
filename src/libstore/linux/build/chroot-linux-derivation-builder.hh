@@ -61,10 +61,6 @@ struct ChrootLinuxDerivationBuilder : ChrootDerivationBuilder, LinuxDerivationBu
 
     void awaitSetup() override;
 
-    void enterChroot() override;
-
-    void setUser() override;
-
     BuilderExit unprepareBuild() override;
 
     void killSandbox(bool getStats) override;

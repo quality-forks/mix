@@ -122,6 +122,13 @@ if build_unit_tests
     }
   endif
 
+  sandbox_helper = find_program('nix-sandbox-helper', required : false)
+  if sandbox_helper.found()
+    test_env += {
+      '_NIX_SANDBOX_HELPER' : sandbox_helper.full_path(),
+    }
+  endif
+
   test(
     meson.project_name(),
     this_exe,

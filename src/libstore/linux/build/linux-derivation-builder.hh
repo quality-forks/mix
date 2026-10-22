@@ -19,7 +19,7 @@
 
 namespace nix {
 
-void setupSeccomp(const LocalSettings & localSettings);
+void setupSeccomp(bool filterSyscalls, bool allowNewPrivileges);
 
 struct LinuxDerivationBuilder : virtual UnixDerivationBuilderImpl
 {

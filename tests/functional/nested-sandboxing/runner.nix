@@ -8,6 +8,7 @@ mkDerivation {
   EXTRA_SANDBOX = builtins.getEnv "EXTRA_SANDBOX";
   TEST_SUITE_NAME = builtins.getEnv "TEST_SUITE_NAME";
   TEST_NAME = builtins.getEnv "TEST_NAME";
+  _NIX_SANDBOX_HELPER = builtins.getEnv "_NIX_SANDBOX_HELPER";
   buildCommand = ''
     set -x
     set -eu -o pipefail

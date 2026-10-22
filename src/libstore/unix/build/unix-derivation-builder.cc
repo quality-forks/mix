@@ -485,25 +485,30 @@ void UnixDerivationBuilderImpl::prepareSandbox()
         throw Error("feature 'uid-range' is not supported on this platform");
 }
 
-void UnixDerivationBuilderImpl::openSlave()
+AutoCloseFD UnixDerivationBuilderImpl::openRawSlave()
 {
     std::string slaveName = getPtsName(builderOut.get());
 
-    AutoCloseFD builderOut = open(slaveName.c_str(), O_RDWR | O_NOCTTY | O_CLOEXEC);
-    if (!builderOut)
+    AutoCloseFD slave = open(slaveName.c_str(), O_RDWR | O_NOCTTY | O_CLOEXEC);
+    if (!slave)
         throw SysError("opening pseudoterminal slave");
 
     // Put the pt into raw mode to prevent \n -> \r\n translation.
     struct termios term;
-    if (tcgetattr(builderOut.get(), &term))
+    if (tcgetattr(slave.get(), &term))
         throw SysError("getting pseudoterminal attributes");
 
     cfmakeraw(&term);
 
-    if (tcsetattr(builderOut.get(), TCSANOW, &term))
+    if (tcsetattr(slave.get(), TCSANOW, &term))
         throw SysError("putting pseudoterminal into raw mode");
 
-    if (dup2(builderOut.get(), STDERR_FILENO) == -1)
+    return slave;
+}
+
+void UnixDerivationBuilderImpl::openSlave()
+{
+    if (dup2(openRawSlave().get(), STDERR_FILENO) == -1)
         throw SysError("cannot pipe standard error into log file");
 }
 
@@ -844,6 +849,41 @@ void UnixDerivationBuilderImpl::writeBuilderFile(const std::string & name, std::
     chownToBuilder(fd.get(), path);
 }
 
+void readFetchurlSecrets(BuiltinBuilderContext & ctx)
+{
+    if (ctx.drv.builder != "builtin:fetchurl")
+        return;
+
+    try {
+        ctx.netrcData = readFile(fileTransferSettings.netrcFile.get());
+    } catch (SystemError &) {
+    }
+
+    if (auto & caFile = fileTransferSettings.caFile.get())
+        try {
+            ctx.caFileData = readFile(*caFile);
+        } catch (SystemError &) {
+        }
+}
+
+void runBuiltinBuilder(const BuiltinBuilderContext & ctx)
+{
+    try {
+        logger = makeJSONLogger(getStandardError()).release();
+
+        std::string builtinName = ctx.drv.builder.substr(8);
+        assert(RegisterBuiltinBuilder::builtinBuilders);
+        if (auto builtin = get(RegisterBuiltinBuilder::builtinBuilders(), builtinName))
+            (*builtin)(ctx);
+        else
+            throw Error("unsupported builtin builder '%1%'", builtinName);
+        _exit(0);
+    } catch (std::exception & e) {
+        writeFull(STDERR_FILENO, e.what() + std::string("\n"));
+        _exit(1);
+    }
+}
+
 void UnixDerivationBuilderImpl::runChild(RunChildArgs args)
 {
     /* Warning: in the child we should absolutely not make any SQLite
@@ -867,18 +907,7 @@ void UnixDerivationBuilderImpl::runChild(RunChildArgs args)
 #endif
         };
 
-        if (drv.isBuiltin() && drv.builder == "builtin:fetchurl") {
-            try {
-                ctx.netrcData = readFile(fileTransferSettings.netrcFile.get());
-            } catch (SystemError &) {
-            }
-
-            if (auto & caFile = fileTransferSettings.caFile.get())
-                try {
-                    ctx.caFileData = readFile(*caFile);
-                } catch (SystemError &) {
-                }
-        }
+        readFetchurlSecrets(ctx);
 
         enterChroot();
 
@@ -907,23 +936,9 @@ void UnixDerivationBuilderImpl::runChild(RunChildArgs args)
 
         /* If this is a builtin builder, call it now. This should not return. */
         if (drv.isBuiltin()) {
-            try {
-                logger = makeJSONLogger(getStandardError()).release();
-
-                for (auto & e : drv.outputs)
-                    ctx.outputs.insert_or_assign(e.first, store->printStorePath(scratchOutputs.at(e.first)));
-
-                std::string builtinName = drv.builder.substr(8);
-                assert(RegisterBuiltinBuilder::builtinBuilders);
-                if (auto builtin = get(RegisterBuiltinBuilder::builtinBuilders(), builtinName))
-                    (*builtin)(ctx);
-                else
-                    throw Error("unsupported builtin builder '%1%'", builtinName);
-                _exit(0);
-            } catch (std::exception & e) {
-                writeFull(STDERR_FILENO, e.what() + std::string("\n"));
-                _exit(1);
-            }
+            for (auto & e : drv.outputs)
+                ctx.outputs.insert_or_assign(e.first, store->printStorePath(scratchOutputs.at(e.first)));
+            runBuiltinBuilder(ctx);
         }
 
         /* It's not a builtin builder, so execute the program. */

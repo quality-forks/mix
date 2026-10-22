@@ -364,7 +364,7 @@ Pid spawnProgram(const SpawnOptions & options, std::span<const FdRedirection> fd
                trickery. */
             args_.push_front(options.argv0.value_or(options.program.native()));
 
-            restoreProcessContext();
+            restoreProcessContext(options.restoreMounts);
 
             /* Unlike the Linux case, it doesn't matter much that we are closing
                the FDs before or after restoreProcessContext(), but on Linux
