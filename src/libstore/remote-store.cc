@@ -747,6 +747,11 @@ ref<Builder> RemoteStore::getBuilder(std::shared_ptr<Store> evalStore)
         ref<RemoteStore>(std::dynamic_pointer_cast<RemoteStore>(shared_from_this())), std::move(evalStore));
 }
 
+bool RemoteStore::resolvesDerivationOutputs()
+{
+    return getConnection()->protoVersion.features.contains(WorkerProto::featureDeepDerivationOutputMap);
+}
+
 void RemoteStore::addTempRoots(const StorePathSet & paths)
 {
     if (paths.empty())

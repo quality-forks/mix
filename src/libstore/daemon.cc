@@ -18,6 +18,7 @@
 #include "nix/util/archive.hh"
 #include "nix/store/derivations.hh"
 #include "nix/store/derivation/resolution.hh"
+#include "nix/store/outputs-query.hh"
 #include "nix/store/derivation/aterm.hh"
 #include "nix/util/args.hh"
 #include "nix/util/logging.hh"
@@ -423,7 +424,7 @@ static void performOp(
     case WorkerProto::Op::QueryDerivationOutputMap: {
         auto path = WorkerProto::Serialise<StorePath>::read(*store, rconn);
         logger->startWork();
-        auto outputs = store->queryPartialDerivationOutputMap(path);
+        auto outputs = deepQueryPartialDerivationOutputMap(*store, path);
         logger->stopWork();
         WorkerProto::write(*store, wconn, outputs);
         break;

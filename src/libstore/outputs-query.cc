@@ -3,6 +3,7 @@
 #include "nix/store/derivation/resolution.hh"
 #include "nix/store/realisation.hh"
 #include "nix/store/local-store.hh"
+#include "nix/store/remote-store.hh"
 #include "nix/util/util.hh"
 #include "nix/util/sync.hh"
 
@@ -52,6 +53,18 @@ struct Caches
      */
     std::optional<std::string> store;
 };
+
+/**
+ * A daemon that resolves the chain itself, against the resolutions its
+ * store keeps, rather than this process reading and rewriting every input.
+ */
+RemoteStore * resolvingDaemon(Store & store, Store * evalStore, const QueryRealisationFun & queryRealisation)
+{
+    auto * remote = dynamic_cast<RemoteStore *>(&store);
+    if ((evalStore && evalStore != &store) || queryRealisation || !remote || !remote->resolvesDerivationOutputs())
+        return nullptr;
+    return remote;
+}
 
 std::optional<std::string> settledKey(Store & store, const QueryRealisationFun & queryRealisation)
 {
@@ -278,6 +291,9 @@ void queryPartialDerivationOutputMapCA(
 std::map<std::string, std::optional<StorePath>> deepQueryPartialDerivationOutputMap(
     Store & store, const StorePath & drvPath, Store * evalStore_, QueryRealisationFun queryRealisation)
 {
+    if (auto * daemon = resolvingDaemon(store, evalStore_, queryRealisation))
+        return daemon->queryPartialDerivationOutputMap(drvPath);
+
     auto & evalStore = evalStore_ ? *evalStore_ : store;
 
     Caches caches{.store = settledKey(store, queryRealisation)};
@@ -316,6 +332,14 @@ std::optional<StorePath> deepQueryPartialDerivationOutput(
     Store * evalStore_,
     QueryRealisationFun queryRealisation)
 {
+    if (auto * daemon = resolvingDaemon(store, evalStore_, queryRealisation)) {
+        auto outputs = daemon->queryPartialDerivationOutputMap(drvPath);
+        auto output = outputs.find(outputName);
+        if (output == outputs.end())
+            throw Error("derivation '%s' does not have an output named '%s'", store.printStorePath(drvPath), outputName);
+        return output->second;
+    }
+
     Caches caches{.store = settledKey(store, queryRealisation)};
     if (!queryRealisation)
         queryRealisation = [&store](const DrvOutput & o) { return store.queryRealisation(o); };

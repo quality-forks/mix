@@ -156,6 +156,8 @@ public:
 
     unsigned int getProtocol() override;
 
+    bool resolvesDerivationOutputs();
+
     std::optional<TrustedFlag> isTrustedClient() override;
 
     void flushBadConnections();

@@ -157,6 +157,13 @@ struct WorkerProto
     static constexpr std::string_view featureAddTempRoots = "addTempRoots";
 
     /**
+     * Feature for a `QueryDerivationOutputMap` that resolves the
+     * derivation's inputs, so that it finds the outputs of floating
+     * content-addressed derivations too.
+     */
+    static constexpr std::string_view featureDeepDerivationOutputMap = "deep-derivation-output-map";
+
+    /**
      * A unidirectional read connection, to be used by the read half of the
      * canonical serializers below.
      */
