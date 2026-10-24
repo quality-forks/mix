@@ -1,3 +1,4 @@
+#include <atomic>
 #include <vector>
 #include <pwd.h>
 #include <grp.h>
@@ -181,7 +182,14 @@ struct AutoUserLock : UserLock
 
         size_t nrSlots = uidSettings.uidCount / maxIdsPerBuild;
 
-        for (size_t i = 0; i < nrSlots; i++) {
+        /* Builds take and release slots roughly in order, so the slot after the last one this
+           process took is usually free, where a scan from slot 0 opens and locks a file for
+           every running build first. */
+        static std::atomic<size_t> nextSlot = 0;
+        size_t firstTried = nextSlot.load() % nrSlots;
+
+        for (size_t tried = 0; tried < nrSlots; tried++) {
+            size_t i = (firstTried + tried) % nrSlots;
             debug("trying user slot '%d'", i);
 
             auto fnUserLock = userPoolDir / fmt("slot-%d", i);
@@ -191,6 +199,7 @@ struct AutoUserLock : UserLock
                 throw SysError("opening user lock %s", PathFmt(fnUserLock));
 
             if (lockFile(fd.get(), ltWrite, false)) {
+                nextSlot = i + 1;
 
                 auto firstUid = uidSettings.startId + i * maxIdsPerBuild;
 
