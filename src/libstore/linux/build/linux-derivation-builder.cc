@@ -25,6 +25,7 @@
 #include <string_view>
 #include <cstdint>
 #include <atomic>
+#include <thread>
 
 #include <fcntl.h>
 #include <sys/ioctl.h>
@@ -1254,8 +1255,18 @@ void sandboxHelperMain()
 
 BuilderExit ChrootLinuxDerivationBuilder::unprepareBuild()
 {
-    sandboxMountNamespace = -1;
-    sandboxUserNamespace = -1;
+    /* Closing the last reference to the sandbox's mount namespace unmounts every bind mount in it
+       before close() returns, a cost per input path that would otherwise stall every other goal. */
+    if (sandboxMountNamespace || sandboxUserNamespace)
+        std::thread([mountNamespace = std::move(sandboxMountNamespace),
+                     userNamespace = std::move(sandboxUserNamespace)]() mutable {
+            try {
+                mountNamespace.close();
+                userNamespace.close();
+            } catch (...) {
+                ignoreExceptionInDestructor();
+            }
+        }).detach();
 
     return UnixDerivationBuilderImpl::unprepareBuild();
 }
