@@ -4,6 +4,7 @@
 #include "nix/store/build/worker.hh"
 #include "nix/store/build/substitution-goal.hh"
 #include "nix/store/build/drv-output-substitution-goal.hh"
+#include "nix/store/build/build-trace-lookup-goal.hh"
 #include "nix/store/build/derivation-goal.hh"
 #include "nix/store/build/derivation-resolution-goal.hh"
 #include "nix/store/build/derivation-building-goal.hh"
@@ -126,6 +127,12 @@ std::shared_ptr<DrvOutputSubstitutionGoal> Worker::makeDrvOutputSubstitutionGoal
     return initGoalIfNeeded(drvOutputSubstitutionGoals[id], id, *this);
 }
 
+std::shared_ptr<BuildTraceLookupGoal>
+Worker::makeBuildTraceLookupGoal(const SingleDerivedPath::Built & req, std::shared_ptr<const Derivation> drv)
+{
+    return initGoalIfNeeded(buildTraceLookupGoals[req], req, std::move(drv), *this);
+}
+
 GoalPtr Worker::makeGoal(const DerivedPath & req, BuildMode buildMode)
 {
     return std::visit(
@@ -162,6 +169,8 @@ void Worker::removeGoal(GoalPtr goal)
         substitutionGoals.erase(subGoal->getStorePath());
     } else if (auto subGoal = std::dynamic_pointer_cast<DrvOutputSubstitutionGoal>(goal)) {
         drvOutputSubstitutionGoals.erase(subGoal->id);
+    } else if (auto lookupGoal = std::dynamic_pointer_cast<BuildTraceLookupGoal>(goal)) {
+        buildTraceLookupGoals.erase(lookupGoal->req);
     } else {
         unreachable();
     }

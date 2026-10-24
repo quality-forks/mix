@@ -1,6 +1,9 @@
 #include "nix/store/build/derivation-trampoline-goal.hh"
+#include "nix/store/build/build-trace-lookup-goal.hh"
+#include "nix/store/build/substitution-goal.hh"
 #include "nix/store/build/worker.hh"
 #include "nix/store/derivations.hh"
+#include "nix/store/worker-settings.hh"
 
 #include <ranges>
 #include <algorithm>
@@ -75,12 +78,67 @@ Goal::Co<Goal::ExitCode> DerivationTrampolineGoal::init(Co<Result> work)
 
 Goal::Co<DerivationTrampolineGoal::Result> DerivationTrampolineGoal::haveToLoadFromStore()
 {
+    if (auto substituted = co_await substituteFromBuildTrace())
+        co_return std::move(*substituted);
+
     auto loadResult = co_await loadDerivation();
     if (auto * failure = std::get_if<BuildResult::Failure>(&loadResult))
         co_return Result{ecFailed, BuildResult{.inner = std::move(*failure)}};
 
     auto [drvPath, drv] = std::get<LoadedDerivation>(std::move(loadResult));
     co_return co_await haveDerivation(std::move(drvPath), std::move(drv));
+}
+
+/* Obtaining a dynamic derivation makes it valid along with every path it
+   references, which for a planned build are all its tools and objects, so
+   outputs found in the build trace are substituted without it. */
+Goal::Co<std::optional<DerivationTrampolineGoal::Result>> DerivationTrampolineGoal::substituteFromBuildTrace()
+{
+    auto * outputNames = std::get_if<OutputsSpec::Names>(&wantedOutputs.raw);
+    if (buildMode != bmNormal || !outputNames || !std::holds_alternative<SingleDerivedPath::Built>(drvReq->raw())
+        || !worker.settings.useSubstitutes || !experimentalFeatureSettings.isEnabled(Xp::CaDerivations))
+        co_return std::nullopt;
+
+    std::map<std::string, std::shared_ptr<BuildTraceLookupGoal>> lookups;
+    Goals waitees;
+    for (auto & output : *outputNames) {
+        auto lookup = worker.makeBuildTraceLookupGoal(SingleDerivedPath::Built{drvReq, output});
+        waitees.insert(lookup);
+        lookups.insert_or_assign(output, std::move(lookup));
+    }
+
+    co_await await(std::move(waitees));
+
+    Goals substitutions;
+    if (nrFailed == 0)
+        for (auto & [_, lookup] : lookups)
+            if (!worker.store.isValidPath(lookup->outputInfo->outPath))
+                substitutions.insert(upcast_goal(worker.makePathSubstitutionGoal(lookup->outputInfo->outPath)));
+
+    bool substituted = !substitutions.empty();
+    co_await await(std::move(substitutions));
+
+    if (nrFailed != 0) {
+        nrFailed = nrNoSubstituters = 0;
+        co_return std::nullopt;
+    }
+
+    SingleDrvOutputs outputs;
+    for (auto & [output, lookup] : lookups) {
+        lookup->registerBuildTrace();
+        outputs.insert_or_assign(output, *lookup->outputInfo);
+    }
+
+    co_return Result{
+        ecSuccess,
+        BuildResult{
+            .inner =
+                BuildResult::Success{
+                    .status = substituted ? BuildResult::Success::Substituted : BuildResult::Success::AlreadyValid,
+                    .builtOutputs = std::move(outputs),
+                },
+        },
+    };
 }
 
 Goal::Co<DerivationTrampolineGoal::LoadResult> DerivationTrampolineGoal::loadDerivation()

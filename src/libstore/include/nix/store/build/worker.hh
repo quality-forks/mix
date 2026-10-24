@@ -25,6 +25,7 @@ struct DerivationResolutionGoal;
 struct DerivationBuildingGoal;
 class PathSubstitutionGoal;
 class DrvOutputSubstitutionGoal;
+struct BuildTraceLookupGoal;
 
 /**
  * Workaround for not being able to declare a something like
@@ -160,6 +161,7 @@ private:
     std::map<StorePath, std::weak_ptr<DerivationBuildingGoal>> derivationBuildingGoals;
     std::map<StorePath, std::weak_ptr<PathSubstitutionGoal>> substitutionGoals;
     std::map<DrvOutput, std::weak_ptr<DrvOutputSubstitutionGoal>> drvOutputSubstitutionGoals;
+    std::map<SingleDerivedPath::Built, std::weak_ptr<BuildTraceLookupGoal>> buildTraceLookupGoals;
 
     /**
      * Goals sleeping for a few seconds (polling a lock).
@@ -315,6 +317,19 @@ public:
     std::shared_ptr<PathSubstitutionGoal> makePathSubstitutionGoal(
         const StorePath & storePath, RepairFlag repair = NoRepair, std::optional<ContentAddress> ca = std::nullopt);
     std::shared_ptr<DrvOutputSubstitutionGoal> makeDrvOutputSubstitutionGoal(const DrvOutput & id);
+
+    /**
+     * @ref BuildTraceLookupGoal "build trace lookup goal"
+     */
+    std::shared_ptr<BuildTraceLookupGoal>
+    makeBuildTraceLookupGoal(const SingleDerivedPath::Built & req, std::shared_ptr<const Derivation> drv = nullptr);
+
+    /**
+     * Build trace lookups that missed in this run, so that a goal
+     * falling back to resolving its inputs does not ask the
+     * substituters again for every derivation below it.
+     */
+    std::set<SingleDerivedPath::Built> buildTraceMisses;
 
     /**
      * Make a goal corresponding to the `DerivedPath`.

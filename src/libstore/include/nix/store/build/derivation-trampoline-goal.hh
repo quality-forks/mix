@@ -125,6 +125,7 @@ private:
     Co<ExitCode> init(Co<Result> work);
     Co<LoadResult> loadDerivation();
     Co<Result> haveToLoadFromStore();
+    Co<std::optional<Result>> substituteFromBuildTrace();
     Co<Result> haveDerivation(StorePath drvPath, Derivation drv);
 
     BuildMode buildMode;

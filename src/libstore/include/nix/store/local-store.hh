@@ -378,6 +378,12 @@ public:
     void registerSettledResolution(const StorePath & drvPath, const SettledResolution & resolution);
 
     /**
+     * Whether any of these derivations has a build trace entry or a settled
+     * resolution in this store.
+     */
+    bool hasAnyRecordOf(const StorePathSet & drvPaths);
+
+    /**
      * Called by `collectGarbage` to trace in reverse.
      *
      * Using this rather than `queryReferrers` directly allows us to

@@ -1,5 +1,6 @@
 #include "nix/store/build/derivation-goal.hh"
 #include "nix/store/build/drv-output-substitution-goal.hh"
+#include "nix/store/build/build-trace-lookup-goal.hh"
 #include "nix/store/build/derivation-building-goal.hh"
 #include "nix/store/build/derivation-resolution-goal.hh"
 #include "nix/store/derivation/resolution.hh"
@@ -92,7 +93,29 @@ Goal::Co<BuildResult> DerivationGoal::haveDerivation(bool storeDerivation)
            through substitutes.  If that doesn't work, we'll build
            them. */
         if (worker.settings.useSubstitutes && drvOptions.substitutesAllowed(worker.settings)) {
-            if (!checkResult) {
+            if (!checkResult && experimentalFeatureSettings.isEnabled(Xp::CaDerivations) && shouldResolve(*drv)) {
+                DrvOutput id{drvPath, wantedOutput};
+                auto lookup = worker.makeBuildTraceLookupGoal(
+                    SingleDerivedPath::Built{makeConstantStorePathRef(drvPath), wantedOutput}, drv.get_ptr());
+                waitees.insert(lookup);
+                co_await await(std::move(waitees));
+
+                if (nrFailed == 0) {
+                    // NOLINTNEXTLINE(bugprone-use-after-move)
+                    waitees.insert(upcast_goal(worker.makePathSubstitutionGoal(lookup->outputInfo->outPath)));
+                    co_await await(std::move(waitees));
+
+                    if (nrFailed != 0)
+                        debug("The output path of the derivation output '%s' could not be substituted", id.to_string());
+                    else {
+                        lookup->registerBuildTrace();
+                        /* `checkPathValidity` finds this again only through a
+                           settled resolution, which only a local store keeps. */
+                        if (buildMode == bmNormal)
+                            co_return success(BuildResult::Success::Substituted, *lookup->outputInfo);
+                    }
+                }
+            } else if (!checkResult) {
                 DrvOutput id{drvPath, wantedOutput};
                 auto g = worker.makeDrvOutputSubstitutionGoal(id);
                 waitees.insert(g);

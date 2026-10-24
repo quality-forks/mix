@@ -15,6 +15,7 @@ headers = [ config_pub_h ] + files(
   'build-result.hh',
   'build.hh',
   'build/build-log.hh',
+  'build/build-trace-lookup-goal.hh',
   'build/derivation-builder.hh',
   'build/derivation-building-goal.hh',
   'build/derivation-building-misc.hh',
