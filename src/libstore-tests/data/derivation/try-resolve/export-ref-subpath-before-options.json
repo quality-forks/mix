@@ -10,6 +10,7 @@
       }
     ]
   },
+  "hiddenInputs": [],
   "impureEnvVars": [],
   "impureHostDeps": [],
   "noChroot": false,

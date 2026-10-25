@@ -143,6 +143,16 @@ struct Options
     std::map<std::string, std::set<Input>, std::less<>> exportReferencesGraph;
 
     /**
+     * env: hiddenInputs
+     *
+     * Inputs that are realised and may be referenced by the outputs,
+     * but are not made available inside the sandbox, along with
+     * their closures. Store paths also reachable from an input
+     * outside those closures stay available.
+     */
+    std::set<Input> hiddenInputs;
+
+    /**
      * env: __sandboxProfile
      *
      * Just for Darwin

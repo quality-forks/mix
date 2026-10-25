@@ -100,6 +100,12 @@ struct DerivationBuilderParams
      */
     const StorePathSet & inputPaths;
 
+    /**
+     * The paths in `inputPaths` that are not made available inside
+     * the sandbox, see `DerivationOptions::hiddenInputs`.
+     */
+    StorePathSet hiddenInputPaths;
+
     const std::map<std::string, InitialOutput> initialOutputs;
 
     const BuildMode & buildMode;

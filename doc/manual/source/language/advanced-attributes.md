@@ -19,6 +19,22 @@ Derivations can declare some infrequently used optional attributes.
     the references graph of `libfoo` is placed in the file
     `libfoo-graph` in the temporary build directory.
 
+  - [`hiddenInputs`]{#adv-attr-hiddenInputs}\
+    A list of store paths that are inputs of the derivation but are not made available inside the [sandbox](@docroot@/command-ref/conf-file.md#conf-sandbox).
+    Their closures are realised like any other input, copied to remote builders, and may be referenced by the outputs.
+    Store paths in their closures that another input outside those closures refers to, directly or indirectly, remain available.
+
+    This is useful when a builder only needs to name a large number of store paths, for example to write derivations that use them, since every store path made available inside the sandbox costs a bind mount on Linux.
+
+    ```nix
+    derivation {
+      ...
+      hiddenInputs = [ sources ];
+    };
+    ```
+
+    It is an error to list a store path that is not an input of the derivation.
+
   - [`passAsFile`]{#adv-attr-passAsFile}\
     A list of names of attributes whose environment variables should be marked
     [*pass as file*](@docroot@/store/derivation/index.md#pass-as-file).

@@ -3,6 +3,7 @@
   "allowLocalNetworking": false,
   "allowSubstitutes": true,
   "exportReferencesGraph": {},
+  "hiddenInputs": [],
   "impureEnvVars": [],
   "impureHostDeps": [],
   "noChroot": false,

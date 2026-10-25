@@ -961,6 +961,33 @@ Goal::Co<DerivationBuildingGoal::LocalBuildOutcome> DerivationBuildingGoal::buil
                 defaultPathsInChroot.insert_or_assign(p, ChrootPath{.source = p});
             }
 
+            StorePathSet hiddenInputPaths;
+            if (!drvOptions.hiddenInputs.empty()) {
+                for (auto & i : drvOptions.hiddenInputs)
+                    if (!drv->inputs.contains(i)) {
+                        outputLocks.unlock();
+                        co_return BuildError(
+                            BuildResult::Failure::InputRejected,
+                            "hidden input '%s' is not an input of '%s'",
+                            worker.store.printStorePath(i),
+                            worker.store.printStorePath(drvPath));
+                    }
+                /* Remote builders get the whole input closure as
+                   `inputs`, so the hidden closure is subtracted from
+                   the roots rather than just the hidden inputs. */
+                StorePathSet hiddenClosure;
+                worker.store.computeFSClosure(drvOptions.hiddenInputs, hiddenClosure);
+                StorePathSet visibleInputs;
+                for (auto & i : drv->inputs)
+                    if (!hiddenClosure.contains(i))
+                        visibleInputs.insert(i);
+                StorePathSet visiblePaths;
+                worker.store.computeFSClosure(visibleInputs, visiblePaths);
+                for (auto & i : hiddenClosure)
+                    if (!visiblePaths.contains(i))
+                        hiddenInputPaths.insert(i);
+            }
+
             try {
                 desugaredEnv = DesugaredEnv::create(worker.store, *drv, drvOptions, inputPaths);
             } catch (BuildError & e) {
@@ -974,6 +1001,7 @@ Goal::Co<DerivationBuildingGoal::LocalBuildOutcome> DerivationBuildingGoal::buil
                 .drv = *drv,
                 .drvOptions = drvOptions,
                 .inputPaths = inputPaths,
+                .hiddenInputPaths = std::move(hiddenInputPaths),
                 .initialOutputs = initialOutputs,
                 .buildMode = buildMode,
                 .defaultPathsInChroot = std::move(defaultPathsInChroot),

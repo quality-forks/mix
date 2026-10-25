@@ -50,6 +50,8 @@ void ChrootDerivationBuilder::prepareSandbox()
     pathsInChroot = getPathsInSandbox();
 
     for (auto & i : inputPaths) {
+        if (hiddenInputPaths.contains(i))
+            continue;
         auto p = store->printStorePath(i);
         pathsInChroot.insert_or_assign(p, ChrootPath{.source = store->toRealPath(i)});
     }

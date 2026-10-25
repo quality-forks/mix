@@ -18,6 +18,7 @@ required:
   - unsafeDiscardReferences
   - passAsFile
   - exportReferencesGraph
+  - hiddenInputs
   - additionalSandboxProfile
   - noChroot
   - impureHostDeps
@@ -84,6 +85,14 @@ properties:
       type: array
       items:
         "$ref": "deriving-path-v1.yaml"
+
+  hiddenInputs:
+    type: array
+    title: Hidden Inputs
+    description: |
+      Inputs whose closures are realised but not made available inside the sandbox.
+    items:
+      "$ref": "deriving-path-v1.yaml"
 
   additionalSandboxProfile:
     type: string

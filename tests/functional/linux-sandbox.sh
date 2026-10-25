@@ -46,6 +46,14 @@ grepQuiet 'may not be deterministic' "$TEST_ROOT"/log
 expectStderr 100 nix-sandbox-build -E 'with import '"${config_nix}"'; mkDerivation { name = "etc-write"; buildCommand = "echo > /etc/test"; }' |
     grepQuiet "/etc/test: Permission denied"
 
+# Test that hidden inputs are realised and referenceable, but not available in the sandbox
+outPath=$(nix-sandbox-build -E 'with import '"${config_nix}"'; mkDerivation {
+  name = "hidden-inputs";
+  hiddenInputs = [ (mkDerivation { name = "hidden"; buildCommand = "echo > $out"; }) ];
+  buildCommand = "[[ ! -e $hiddenInputs ]]; echo $hiddenInputs > $out";
+}')
+nix-store -q --references "$outPath" | grepQuiet hidden
+
 
 ## Test mounting of SSL certificates into the sandbox
 testCert () {

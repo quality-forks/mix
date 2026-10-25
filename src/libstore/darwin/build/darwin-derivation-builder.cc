@@ -87,6 +87,8 @@ void DarwinDerivationBuilder::setUser()
 
         /* Add all our input paths to the chroot */
         for (auto & i : inputPaths) {
+            if (hiddenInputPaths.contains(i))
+                continue;
             auto p = store->printStorePath(i);
             pathsInChroot.insert_or_assign(p, ChrootPath{.source = p});
         }
