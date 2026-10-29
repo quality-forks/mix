@@ -296,8 +296,7 @@ public:
         const StorePath & drvPath,
         ref<const Derivation> drv,
         const OutputName & wantedOutput,
-        BuildMode buildMode,
-        bool storeDerivation);
+        BuildMode buildMode);
 
     /**
      * @ref DerivationResolutionGoal "derivation resolution goal"

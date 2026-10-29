@@ -108,6 +108,11 @@ std::vector<KeyedBuildResult> Worker::buildPathsWithResults(const std::vector<De
 
 BuildResult Worker::buildDerivation(const StorePath & drvPath, const BasicDerivation & drv, BuildMode buildMode)
 {
+    /* A derivation handed over without being in the store came from a build
+       hook already, so passing it to the hook again recurses forever. */
+    if (!store.isValidPath(drvPath))
+        tryBuildHook = false;
+
     auto goal = makeDerivationTrampolineGoal(drvPath, OutputsSpec::All{}, unresolve(drv), buildMode);
 
     try {

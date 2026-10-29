@@ -40,16 +40,12 @@ struct DerivationGoal : public Goal
      */
     OutputName wantedOutput;
 
-    /**
-     * @param storeDerivation See `DerivationBuildingGoal`. This is just passed along.
-     */
     DerivationGoal(
         const StorePath & drvPath,
         ref<const Derivation> drv,
         const OutputName & wantedOutput,
         Worker & worker,
-        BuildMode buildMode,
-        bool storeDerivation);
+        BuildMode buildMode);
     ~DerivationGoal() = default;
 
     std::string key() override;
@@ -77,8 +73,8 @@ private:
     /**
      * The states.
      */
-    Co<ExitCode> init(bool storeDerivation);
-    Co<BuildResult> haveDerivation(bool storeDerivation);
+    Co<ExitCode> init();
+    Co<BuildResult> haveDerivation();
 
     /**
      * Return `std::nullopt` if the output is unknown, e.g. un unbuilt

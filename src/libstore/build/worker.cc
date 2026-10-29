@@ -91,17 +91,10 @@ std::shared_ptr<DerivationGoal> Worker::makeDerivationGoal(
     const StorePath & drvPath,
     ref<const Derivation> drv,
     const OutputName & wantedOutput,
-    BuildMode buildMode,
-    bool storeDerivation)
+    BuildMode buildMode)
 {
     return initGoalIfNeeded(
-        derivationGoals[drvPath][wantedOutput],
-        drvPath,
-        std::move(drv),
-        wantedOutput,
-        *this,
-        buildMode,
-        storeDerivation);
+        derivationGoals[drvPath][wantedOutput], drvPath, std::move(drv), wantedOutput, *this, buildMode);
 }
 
 std::shared_ptr<DerivationResolutionGoal>

@@ -24,9 +24,8 @@ DerivationGoal::DerivationGoal(
     ref<const Derivation> drv,
     const OutputName & wantedOutput,
     Worker & worker,
-    BuildMode buildMode,
-    bool storeDerivation)
-    : Goal(worker, init(storeDerivation))
+    BuildMode buildMode)
+    : Goal(worker, init())
     , drvPath(drvPath)
     , wantedOutput(wantedOutput)
     , drv{std::move(drv)}
@@ -48,13 +47,13 @@ std::string DerivationGoal::key()
     }.to_string(worker.store);
 }
 
-Goal::Co<Goal::ExitCode> DerivationGoal::init(bool storeDerivation)
+Goal::Co<Goal::ExitCode> DerivationGoal::init()
 {
-    buildResult = co_await haveDerivation(storeDerivation);
+    buildResult = co_await haveDerivation();
     co_return buildResult.tryGetSuccess() ? ecSuccess : ecFailed;
 }
 
-Goal::Co<BuildResult> DerivationGoal::haveDerivation(bool storeDerivation)
+Goal::Co<BuildResult> DerivationGoal::haveDerivation()
 {
     trace("have derivation");
 
@@ -203,8 +202,7 @@ Goal::Co<BuildResult> DerivationGoal::haveDerivation(bool storeDerivation)
             pathResolved,
             make_ref<const Derivation>(unresolve(drvResolved)),
             wantedOutput,
-            buildMode,
-            /*storeDerivation=*/true);
+            buildMode);
 
         {
             Goals waitees{resolvedDrvGoal};
@@ -301,24 +299,6 @@ Goal::Co<BuildResult> DerivationGoal::haveDerivation(bool storeDerivation)
                 input.raw());
         return srcs;
     }));
-
-    if (storeDerivation) {
-        assert(std::ranges::none_of(drv->inputs, [](const auto & input) {
-            return std::holds_alternative<SingleDerivedPath::Built>(input.raw());
-        }));
-        /* `writeDerivation` checks the derivation's references are valid,
-           so the eval store's sources must be copied over first. */
-        if (&worker.evalStore != &worker.store) {
-            RealisedPath::Set inputSrcs;
-            for (auto & i : resolvedDrv->inputs)
-                if (worker.evalStore.isValidPath(i))
-                    inputSrcs.insert(i);
-            copyClosure(worker.evalStore, worker.store, inputSrcs);
-        }
-        /* Store the resolved derivation, as part of the record of
-           what we're actually building */
-        worker.store.writeDerivation(unresolve(*resolvedDrv));
-    }
 
     auto g = worker.makeDerivationBuildingGoal(drvPath, resolvedDrv, buildMode);
 

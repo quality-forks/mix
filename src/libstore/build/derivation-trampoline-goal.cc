@@ -230,7 +230,7 @@ Goal::Co<DerivationTrampolineGoal::Result> DerivationTrampolineGoal::haveDerivat
     auto sharedDrv = make_ref<const Derivation>(std::move(drv));
 
     for (auto & output : resolvedWantedOutputs) {
-        auto g = upcast_goal(worker.makeDerivationGoal(drvPath, sharedDrv, output, buildMode, false));
+        auto g = upcast_goal(worker.makeDerivationGoal(drvPath, sharedDrv, output, buildMode));
         g->preserveFailure = true;
         /* We will finish with it ourselves, as if we were the derivational goal. */
         concreteDrvGoals.insert(std::move(g));

@@ -17,6 +17,7 @@
 #include "nix/store/common-protocol-impl.hh"
 #include "nix/store/local-store.hh" // TODO remove, along with remaining downcasts
 #include "nix/store/outputs-query.hh"
+#include "nix/store/derivation/resolution.hh"
 #include "nix/store/globals.hh"
 #include "nix/util/current-process.hh"
 #include "nix/util/callback.hh"
@@ -306,6 +307,18 @@ Goal::Co<void> DerivationBuildingGoal::realiseInputs()
     co_await await(std::move(waitees));
 
     trace("all inputs realised");
+}
+
+/* A resolved derivation stays out of the store until something reads it by
+   path. A basic derivation that a remote builder was handed hashes to another
+   path than the one it came under, so it is never written. */
+static void storeResolved(Store & store, const StorePath & drvPath, const BasicDerivation & drv)
+{
+    if (store.isValidPath(drvPath))
+        return;
+    auto unresolved = unresolve(drv);
+    if (computeStorePath(store, unresolved) == drvPath)
+        store.writeDerivation(unresolved);
 }
 
 /* At least one of the output paths could not be
@@ -1178,6 +1191,7 @@ Goal::Co<DerivationBuildingGoal::LocalBuildOutcome> DerivationBuildingGoal::buil
                than silently skip the hook. */
             throw UnimplementedError("the post-build hook is not yet supported on Windows");
 #else
+            storeResolved(worker.store, drvPath, *drv);
             auto hookState = runPostBuildHook(worker.settings, worker.store, *logger, drvPath, outputPaths);
             worker.childStarted(shared_from_this(), {hookState->out->readSide.get()}, false, false);
             while (true) {
@@ -1296,8 +1310,10 @@ HookReply DerivationBuildingGoal::tryBuildHook(const DerivationOptions<StorePath
     return rpDecline;
 #else
     /* This should use `worker.evalStore`, but per #13179 the build hook
-       doesn't work with eval store anyways. */
-    if (worker.settings.buildHook.get().empty() || !worker.tryBuildHook || !worker.store.isValidPath(drvPath))
+       doesn't work with eval store anyways. A resolved derivation is not
+       in the store until a hook accepts it. */
+    if (worker.settings.buildHook.get().empty() || !worker.tryBuildHook
+        || (&worker.evalStore != &worker.store && !worker.store.isValidPath(drvPath)))
         return rpDecline;
 
     if (!worker.hook)
@@ -1347,6 +1363,8 @@ HookReply DerivationBuildingGoal::tryBuildHook(const DerivationOptions<StorePath
             return rpPostpone;
         else if (reply != "accept")
             throw Error("bad hook reply '%s'", reply);
+
+        storeResolved(worker.store, drvPath, *drv);
 
     } catch (SystemError & e) {
         if (e.is(std::errc::broken_pipe)) {
