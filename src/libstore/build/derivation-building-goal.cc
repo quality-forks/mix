@@ -293,9 +293,28 @@ Goal::Co<void> DerivationBuildingGoal::realiseInputs()
         copyClosure(worker.evalStore, worker.store, inputSrcs);
     }
 
-    for (auto & i : drv->inputs) {
-        if (worker.store.isValidPath(i))
-            continue;
+    /* Each validity check is a database lookup, which would hold up every other goal. */
+    StorePathSet missing;
+    {
+        std::jthread checking;
+        missing = co_await AsyncCallback<StorePathSet>{[&](Callback<StorePathSet> callback) {
+            checking = std::jthread(
+                [callback = std::move(callback), &store = worker.store, &inputs = drv->inputs]() mutable {
+                    try {
+                        ReceiveInterrupts receiveInterrupts;
+                        StorePathSet invalid;
+                        for (auto & i : inputs)
+                            if (!store.isValidPath(i))
+                                invalid.insert(i);
+                        callback(std::move(invalid));
+                    } catch (...) {
+                        callback.rethrow();
+                    }
+                });
+        }};
+    }
+
+    for (auto & i : missing) {
         if (!worker.settings.useSubstitutes)
             throw Error(
                 "dependency '%s' of '%s' does not exist, and substitution is disabled",
