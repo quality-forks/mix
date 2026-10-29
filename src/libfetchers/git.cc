@@ -843,7 +843,11 @@ struct GitInputScheme : InputScheme
            fetches do not mistake the initial HEAD for the remote default. */
         bool usesDefaultRef = !originalRef && (!origRev || getAllRefsAttr(input));
         bool shallow = getShallowAttr(input);
-        auto ref = originalRef ? *originalRef : usesDefaultRef ? getDefaultRef(settings, repoInfo, shallow) : "HEAD";
+        /* Finding the default branch runs ls-remote, which a cached revision does not need. */
+        bool deferDefaultRef = usesDefaultRef && origRev && !repoInfo.getPath();
+        auto ref = originalRef                         ? *originalRef
+                   : usesDefaultRef && !deferDefaultRef ? getDefaultRef(settings, repoInfo, shallow)
+                                                        : "HEAD";
         input.attrs.insert_or_assign("ref", ref);
 
         std::filesystem::path repoDir;
@@ -875,6 +879,11 @@ struct GitInputScheme : InputScheme
                repo. */
             if (auto rev = input.getRev()) {
                 doFetch = !repo->hasObject(*rev);
+                if (doFetch && deferDefaultRef) {
+                    ref = getDefaultRef(settings, repoInfo, shallow);
+                    input.attrs.insert_or_assign("ref", ref);
+                    localRefFile = ref.compare(0, 5, "refs/") == 0 ? cacheDir / ref : cacheDir / "refs/heads" / ref;
+                }
             } else {
                 if (getAllRefsAttr(input)) {
                     doFetch = true;
