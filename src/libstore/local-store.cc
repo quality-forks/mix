@@ -126,6 +126,13 @@ struct LocalStore::State::Stmts
     SQLiteStmt QueryValidPaths;
 };
 
+struct LocalStore::Reader
+{
+    SQLite db;
+    SQLiteStmt QueryPathInfo;
+    SQLiteStmt QueryReferences;
+};
+
 LocalStore::LocalStore(ref<const Config> config)
     : Store{*config}
     , LocalFSStore{*config}
@@ -137,6 +144,20 @@ LocalStore::LocalStore(ref<const Config> config)
     , schemaPath(dbDir / "schema")
     , tempRootsDir(config->stateDir.get() / "temproots")
     , fnTempRoots(tempRootsDir / std::to_string(getpid()))
+    , readers(make_ref<Pool<Reader>>(std::numeric_limits<size_t>::max(), [this]() {
+        auto reader = make_ref<Reader>();
+        reader->db = SQLite(
+            dbDir / "db.sqlite",
+            {.mode = this->config->readOnly ? SQLiteOpenMode::Immutable : SQLiteOpenMode::NoCreate,
+             .useWAL = settings.useSQLiteWAL});
+        reader->db.exec("pragma query_only = 1");
+        reader->QueryPathInfo.create(
+            reader->db,
+            "select id, hash, registrationTime, deriver, narSize, ultimate, sigs, ca from ValidPaths where path = ?;");
+        reader->QueryReferences.create(
+            reader->db, "select path from Refs join ValidPaths on reference = id where referrer = ?;");
+        return reader;
+    }))
 {
     auto state(_state->lock());
     state->stmts = std::make_unique<State::Stmts>();
@@ -866,7 +887,8 @@ void LocalStore::queryPathInfoUncached(
 {
     try {
         callback(retrySQLite<std::shared_ptr<const ValidPathInfo>>([&]() {
-            return queryPathInfoInternal(*_state->lock(), path);
+            auto reader(readers->get());
+            return queryPathInfoInternal(reader->QueryPathInfo, reader->QueryReferences, path);
         }));
 
     } catch (...) {
@@ -876,8 +898,14 @@ void LocalStore::queryPathInfoUncached(
 
 std::shared_ptr<const ValidPathInfo> LocalStore::queryPathInfoInternal(State & state, const StorePath & path)
 {
+    return queryPathInfoInternal(state.stmts->QueryPathInfo, state.stmts->QueryReferences, path);
+}
+
+std::shared_ptr<const ValidPathInfo>
+LocalStore::queryPathInfoInternal(SQLiteStmt & queryPathInfo, SQLiteStmt & queryReferences, const StorePath & path)
+{
     /* Get the path info. */
-    auto useQueryPathInfo(state.stmts->QueryPathInfo.use().apply(printStorePath(path)));
+    auto useQueryPathInfo(queryPathInfo.use().apply(printStorePath(path)));
 
     if (!useQueryPathInfo.next())
         return std::shared_ptr<ValidPathInfo>();
@@ -895,7 +923,7 @@ std::shared_ptr<const ValidPathInfo> LocalStore::queryPathInfoInternal(State & s
 
     info->registrationTime = useQueryPathInfo.getInt(2);
 
-    auto s = (const char *) sqlite3_column_text(state.stmts->QueryPathInfo, 3);
+    auto s = (const char *) sqlite3_column_text(queryPathInfo, 3);
     if (s)
         info->deriver = parseStorePath(s);
 
@@ -904,16 +932,16 @@ std::shared_ptr<const ValidPathInfo> LocalStore::queryPathInfoInternal(State & s
 
     info->ultimate = useQueryPathInfo.getInt(5) == 1;
 
-    s = (const char *) sqlite3_column_text(state.stmts->QueryPathInfo, 6);
+    s = (const char *) sqlite3_column_text(queryPathInfo, 6);
     if (s)
         info->sigs = Signature::parseMany(tokenizeString<StringSet>(s, " "));
 
-    s = (const char *) sqlite3_column_text(state.stmts->QueryPathInfo, 7);
+    s = (const char *) sqlite3_column_text(queryPathInfo, 7);
     if (s)
         info->ca = ContentAddress::parseOpt(s);
 
     /* Get the references. */
-    auto useQueryReferences(state.stmts->QueryReferences.use().apply(id));
+    auto useQueryReferences(queryReferences.use().apply(id));
 
     while (useQueryReferences.next())
         info->references.insert(parseStorePath(useQueryReferences.getStr(0)));
@@ -949,7 +977,10 @@ bool LocalStore::isValidPath_(State & state, const StorePath & path)
 
 bool LocalStore::isValidPathUncached(const StorePath & path)
 {
-    return retrySQLite<bool>([&]() { return isValidPath_(*_state->lock(), path); });
+    return retrySQLite<bool>([&]() {
+        auto reader(readers->get());
+        return reader->QueryPathInfo.use().apply(printStorePath(path)).next();
+    });
 }
 
 StorePathSet LocalStore::queryValidPaths(const StorePathSet & paths, SubstituteFlag maybeSubstitute)

@@ -7,6 +7,7 @@
 #include "nix/store/store-api.hh"
 #include "nix/store/indirect-root-store.hh"
 #include "nix/util/sync.hh"
+#include "nix/util/pool.hh"
 
 #include <chrono>
 #include <future>
@@ -247,6 +248,14 @@ private:
      * between immutable and mutable fields.
      */
     ref<Sync<State>> _state;
+
+    /**
+     * Connections that only read, so a lookup on one thread does not wait
+     * for another thread's write transaction to commit.
+     */
+    struct Reader;
+
+    ref<Pool<Reader>> readers;
 
 public:
 
@@ -535,6 +544,9 @@ private:
     void invalidatePathChecked(const StorePath & path);
 
     std::shared_ptr<const ValidPathInfo> queryPathInfoInternal(State & state, const StorePath & path);
+
+    std::shared_ptr<const ValidPathInfo>
+    queryPathInfoInternal(SQLiteStmt & queryPathInfo, SQLiteStmt & queryReferences, const StorePath & path);
 
     void updatePathInfo(State & state, const ValidPathInfo & info);
 
