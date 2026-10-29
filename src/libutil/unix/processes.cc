@@ -251,6 +251,7 @@ pid_t startProcess(fun<void()> processMain, const ProcessOptions & options)
            ~ProgressBar() tries to join a thread that doesn't
            exist. */
         logger = newLogger;
+        forgetSignalCallbacks();
         try {
 #ifdef __linux__
             if (options.dieWithParent && prctl(PR_SET_PDEATHSIG, SIGKILL) == -1)

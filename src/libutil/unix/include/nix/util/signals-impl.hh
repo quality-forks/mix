@@ -63,6 +63,13 @@ void restoreSignals();
 
 void triggerInterrupt();
 
+/**
+ * In a child just forked or cloned from a threaded process, replace the
+ * interrupt callback registry, whose lock another parent thread may have
+ * held at that moment and nothing in the child will ever release.
+ */
+void forgetSignalCallbacks();
+
 } // namespace unix
 
 static inline void setInterrupted(bool isInterrupted)

@@ -49,6 +49,8 @@ struct SignalCallbacks
 
 InterruptCallback::~InterruptCallback() {}
 
+static Sync<SignalCallbacks> * _signalCallbacks = nullptr;
+
 /* Required to avoid static initialization order fiasco. This allows global
    objects to safely register callbacks. */
 static Sync<SignalCallbacks> & getSignalCallbacks()
@@ -56,8 +58,15 @@ static Sync<SignalCallbacks> & getSignalCallbacks()
     /* Intentionally leak, according to the Construct On First Use Idiom.
        An alternative is to use the Nifty Counter Idiom, but
        SignalCallbacks' destructor is not very important. */
-    static Sync<SignalCallbacks> * _signalCallbacks = new Sync<SignalCallbacks>();
+    static bool constructed = (_signalCallbacks = new Sync<SignalCallbacks>(), true);
+    (void) constructed;
     return *_signalCallbacks;
+}
+
+void unix::forgetSignalCallbacks()
+{
+    getSignalCallbacks();
+    _signalCallbacks = new Sync<SignalCallbacks>();
 }
 
 static void triggerSignalCallbacks(SignalType type)
