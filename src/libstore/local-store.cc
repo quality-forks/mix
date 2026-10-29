@@ -286,9 +286,14 @@ LocalStore::LocalStore(ref<const Config> config)
         throw Error("current Nix store schema is version %1%, but I only support %2%", curSchema, nixSchemaVersion);
 
     else if (curSchema == 0) { /* new store */
+        acquireWriteLock();
+        if (getSchema() == 0) {
+            openDB(*state, true);
+            writeFile(schemaPath, fmt("%1%", nixSchemaVersion), 0666, FsSync::Yes);
+        } else
+            openDB(*state, false);
         curSchema = nixSchemaVersion;
-        openDB(*state, true);
-        writeFile(schemaPath, fmt("%1%", curSchema), 0666, FsSync::Yes);
+        lockFile(globalLock.get(), ltRead, true);
     }
 
     else if (curSchema < nixSchemaVersion) {
