@@ -3,6 +3,7 @@
 #include "nix/util/fmt.hh"
 #include "nix/util/signals.hh"
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <mutex>
@@ -124,17 +125,54 @@ std::string replaceStrings(std::string res, std::string_view from, std::string_v
 std::string
 rewriteStrings(std::string s, const StringMap & rewrites, std::set<uint64_t> * matches, uint64_t offsetShift)
 {
-    for (auto & i : rewrites) {
-        if (i.first == i.second)
+    std::string firsts;
+    std::vector<size_t> lengths;
+    for (auto & [from, to] : rewrites) {
+        if (from.empty() || from == to)
             continue;
-        size_t j = 0;
-        while ((j = s.find(i.first, j)) != s.npos) {
-            if (matches)
-                matches->insert(j + offsetShift);
-            s.replace(j, i.first.size(), i.second);
-        }
+        if (firsts.find(from[0]) == firsts.npos)
+            firsts += from[0];
+        if (std::ranges::find(lengths, from.size()) == lengths.end())
+            lengths.push_back(from.size());
     }
-    return s;
+
+    std::ranges::sort(lengths, std::greater{});
+
+    std::string res;
+    size_t done = 0;
+
+    for (size_t pos = 0; !lengths.empty() && (pos = s.find_first_of(firsts, pos)) != s.npos;) {
+        const std::string * to = nullptr;
+        size_t len = 0;
+
+        for (auto length : lengths) {
+            if (length > s.size() - pos)
+                continue;
+            auto i = rewrites.find(std::string_view(s).substr(pos, length));
+            if (i != rewrites.end() && i->first != i->second) {
+                to = &i->second;
+                len = length;
+                break;
+            }
+        }
+
+        if (!to) {
+            ++pos;
+            continue;
+        }
+
+        res.append(s, done, pos - done);
+        if (matches)
+            matches->insert(res.size() + offsetShift);
+        res += *to;
+        pos += len;
+        done = pos;
+    }
+
+    if (done == 0)
+        return s;
+    res.append(s, done);
+    return res;
 }
 
 template<std::integral N>
