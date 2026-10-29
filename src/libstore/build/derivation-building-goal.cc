@@ -343,8 +343,24 @@ Goal::Co<DerivationBuildingGoal::Result> DerivationBuildingGoal::tryToBuild()
 
     /* Determine the full set of input paths. */
 
+    /* Each path in the closure is a database lookup, which would hold up every other goal. */
     StorePathSet inputPaths;
-    worker.store.computeFSClosure(drv->inputs, inputPaths);
+    {
+        std::jthread closing;
+        inputPaths = co_await AsyncCallback<StorePathSet>{[&](Callback<StorePathSet> callback) {
+            closing = std::jthread(
+                [callback = std::move(callback), &store = worker.store, &inputs = drv->inputs]() mutable {
+                    try {
+                        ReceiveInterrupts receiveInterrupts;
+                        StorePathSet closure;
+                        store.computeFSClosure(inputs, closure);
+                        callback(std::move(closure));
+                    } catch (...) {
+                        callback.rethrow();
+                    }
+                });
+        }};
+    }
 
     debug("added input paths %s", concatMapStringsSep(", ", inputPaths, [&](auto & p) {
               return "'" + worker.store.printStorePath(p) + "'";
