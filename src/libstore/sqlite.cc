@@ -4,13 +4,6 @@
 #include "nix/util/url.hh"
 #include "nix/util/signals.hh"
 
-#ifdef __linux__
-#  include "nix/util/file-descriptor.hh"
-#  include <fcntl.h>
-#  include <sys/vfs.h>
-#  include <unistd.h>
-#endif
-
 #include <sqlite3.h>
 
 #include <thread>
@@ -70,28 +63,6 @@ static void traceSQL(void * x, const char * sql)
 
 SQLite::SQLite(const std::filesystem::path & path, Settings && settings)
 {
-    // Work around a ZFS issue where SQLite's truncate() call on
-    // db.sqlite-shm can randomly take up to a few seconds. See
-    // https://github.com/openzfs/zfs/issues/14290#issuecomment-3074672917.
-    // Remove this workaround when a fix is widely installed, perhaps 2027? Candidate:
-    // https://github.com/search?q=repo%3Aopenzfs%2Fzfs+%22Linux%3A+zfs_putpage%3A+complete+async+page+writeback+immediately%22&type=commits
-#ifdef __linux__
-    try {
-        auto shmFile = path;
-        shmFile += "-shm";
-        AutoCloseFD fd = open(shmFile.string().c_str(), O_RDWR | O_CLOEXEC);
-        if (fd) {
-            struct statfs fs;
-            if (fstatfs(fd.get(), &fs))
-                throw SysError("statfs() on %s", PathFmt(shmFile));
-            if (fs.f_type == /* ZFS_SUPER_MAGIC */ 801189825 && fdatasync(fd.get()) != 0)
-                throw SysError("fsync() on %s", PathFmt(shmFile));
-        }
-    } catch (...) {
-        throw;
-    }
-#endif
-
     // useSQLiteWAL also indicates what virtual file system we need.  Using
     // `unix-dotfile` is needed on NFS file systems and on Windows' Subsystem
     // for Linux (WSL) where useSQLiteWAL should be false by default.
