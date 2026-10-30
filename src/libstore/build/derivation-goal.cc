@@ -245,6 +245,14 @@ Goal::Co<BuildResult> DerivationGoal::haveDerivation()
                     wantedOutput);
             }();
 
+            /* A derived entry lets a client that evaluated this derivation
+               skip resolving its inputs. It is recorded only here, where
+               those inputs were realised into this store. */
+            DrvOutput unresolvedId{drvPath, wantedOutput};
+            if (experimentalFeatureSettings.isEnabled(Xp::CaDerivations)
+                && !worker.store.queryRealisation(unresolvedId))
+                worker.store.registerDrvOutput(Realisation{realisation, unresolvedId}, NoCheckSigs);
+
             auto status = success.status;
             if (status == BuildResult::Success::AlreadyValid)
                 status = BuildResult::Success::ResolvesToAlreadyValid;
