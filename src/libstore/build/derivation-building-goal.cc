@@ -54,7 +54,12 @@ DerivationBuildingGoal::DerivationBuildingGoal(
     worker.store.addTempRoot(this->drvPath);
 }
 
-DerivationBuildingGoal::~DerivationBuildingGoal() = default;
+DerivationBuildingGoal::~DerivationBuildingGoal()
+{
+    /* The coroutine's threads read drvPath and drv, and ~Goal would only
+       join them once those are freed. */
+    top_co.reset();
+}
 
 std::string DerivationBuildingGoal::key()
 {
