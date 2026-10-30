@@ -51,9 +51,22 @@ Worker::~Worker()
        their destructors). */
     topGoals.clear();
 
+    for (auto & failure : deferredFailures)
+        try {
+            logError(failure);
+        } catch (...) {
+            ignoreExceptionInDestructor();
+        }
+
     assert(expectedSubstitutions == 0);
     assert(expectedDownloadSize == 0);
     assert(expectedNarSize == 0);
+}
+
+void Worker::forgetDeferred(const BuildResult::Failure & failure)
+{
+    auto msg = failure.info().msg.str();
+    std::erase_if(deferredFailures, [&](const ErrorInfo & deferred) { return deferred.msg.str() == msg; });
 }
 
 template<class G, typename... Args>

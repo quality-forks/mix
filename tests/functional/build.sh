@@ -158,10 +158,10 @@ printf "%s\n" "$drv^*" | nix build --no-link --stdin --json | jq --exit-status '
 # --keep-going and FOD
 if isDaemonNewer "2.34pre"; then
     # With the fix, cancelled goals are not reported as failures.
-    # Use -j1 so only x1 starts and fails; x2, x3, x4 are cancelled.
+    # Use -j1 so only one starts and fails, and the rest are cancelled.
     out="$(nix build -f fod-failing.nix -j1 -L 2>&1)" && status=0 || status=$?
     test "$status" = 1
-    # Only the hash mismatch error for x1. Cancelled goals not reported.
+    # Only the first hash mismatch error. Cancelled goals not reported.
     test "$(<<<"$out" grep -cE '^error:')" = 1
     # Regression test: error messages should not be empty (end with just "failed:")
     <<<"$out" grepQuietInverse -E "^error:.*failed: *$"
@@ -171,8 +171,8 @@ else
     # At minimum, check that x1 is reported as failing
     <<<"$out" grepQuiet -E "error:.*-x1"
 fi
-<<<"$out" grepQuiet -E "hash mismatch in fixed-output derivation '.*-x1\\.drv'"
-<<<"$out" grepQuiet -vE "hash mismatch in fixed-output derivation '.*-x3\\.drv'"
+# Inputs are checked off the worker thread, so any of x1, x2 and x3 can take the slot first.
+test "$(<<<"$out" grep -cE "hash mismatch in fixed-output derivation '.*-x[123]\\.drv'")" = 1
 <<<"$out" grepQuiet -vE "hash mismatch in fixed-output derivation '.*-x2\\.drv'"
 
 out="$(nix build -f fod-failing.nix -L x1 x2 x3 --keep-going 2>&1)" && status=0 || status=$?

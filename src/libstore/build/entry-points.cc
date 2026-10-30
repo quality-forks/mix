@@ -50,6 +50,7 @@ void Worker::buildPaths(const std::vector<DerivedPath> & reqs, BuildMode buildMo
     BuildResult::Failure * failure = nullptr;
     for (auto & i : goals) {
         if (auto * f = i->buildResult.tryGetFailure()) {
+            forgetDeferred(*f);
             if (failure)
                 logError(f->info());
             else
@@ -96,6 +97,8 @@ std::vector<KeyedBuildResult> Worker::buildPathsWithResults(const std::vector<De
            to avoid reporting spurious failures with empty messages. */
         if (!goalPtr->exitCode)
             continue;
+        if (auto * failure = goalPtr->buildResult.tryGetFailure())
+            forgetDeferred(*failure);
         results.emplace_back(
             KeyedBuildResult{
                 goalPtr->buildResult,
@@ -117,6 +120,8 @@ BuildResult Worker::buildDerivation(const StorePath & drvPath, const BasicDeriva
 
     try {
         run(Goals{goal});
+        if (auto * failure = goal->buildResult.tryGetFailure())
+            forgetDeferred(*failure);
         return goal->buildResult;
     } catch (Error & e) {
         return BuildResult{

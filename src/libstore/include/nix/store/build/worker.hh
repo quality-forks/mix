@@ -256,6 +256,18 @@ public:
     uint64_t failedBuilds = 0;
     uint64_t runningBuilds = 0;
 
+    /**
+     * Failures of goals others waited on. Without --keep-going they are held
+     * until the operation ends, so one that is also the operation's result is
+     * not printed twice.
+     */
+    std::vector<ErrorInfo> deferredFailures;
+
+    /**
+     * Drop a deferred failure that the operation reports as a result.
+     */
+    void forgetDeferred(const BuildResult::Failure & failure);
+
     uint64_t expectedSubstitutions = 0;
     uint64_t doneSubstitutions = 0;
     uint64_t failedSubstitutions = 0;

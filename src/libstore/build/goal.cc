@@ -150,8 +150,12 @@ void Goal::work()
     // expected behavior, not an error.
     if (result == ecFailed) {
         if (auto * failure = buildResult.tryGetFailure()) {
-            if (!preserveFailure && !waiters.empty())
-                logError(failure->info());
+            if (!preserveFailure && !waiters.empty()) {
+                if (worker.settings.keepGoing)
+                    logError(failure->info());
+                else
+                    worker.deferredFailures.push_back(failure->info());
+            }
         }
     }
 
