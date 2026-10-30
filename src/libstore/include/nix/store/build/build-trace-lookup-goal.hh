@@ -8,6 +8,8 @@
 
 namespace nix {
 
+struct DrvOutputSubstitutionGoal;
+
 /**
  * Find the build trace entry of one derivation output without making any
  * output path valid, so a floating content-addressed derivation can be
@@ -51,6 +53,8 @@ private:
     std::optional<StorePath> concreteDrvPath;
 
     std::shared_ptr<BuildTraceLookupGoal> producerGoal;
+
+    std::shared_ptr<DrvOutputSubstitutionGoal> unresolvedGoal;
 
     bool substituted = false;
 

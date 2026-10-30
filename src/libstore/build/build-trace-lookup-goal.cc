@@ -77,6 +77,11 @@ Goal::Co<std::shared_ptr<const Derivation>> BuildTraceLookupGoal::readDerivation
         if (drvStore->isValidPath(drvPath))
             co_return std::make_shared<const Derivation>(drvStore->readDerivation(drvPath));
 
+    /* The unresolved key needs only the path, so it is asked for during
+       the narinfo and NAR round trips below. */
+    if (!worker.buildTraceMisses.contains(req))
+        unresolvedGoal = worker.makeDrvOutputSubstitutionGoal(DrvOutput{drvPath, req.output});
+
     for (const auto & sub : worker.getSubstituters()) {
         auto * cache = dynamic_cast<BinaryCacheStore *>(&*sub);
         if (!cache)
@@ -160,10 +165,24 @@ Goal::Co<Goal::ExitCode> BuildTraceLookupGoal::queryRemote(const StorePath & drv
 {
     DrvOutput id{drvPath, req.output};
 
-    auto unresolvedGoal = worker.makeDrvOutputSubstitutionGoal(id);
-    co_await await({unresolvedGoal});
+    if (!unresolvedGoal)
+        unresolvedGoal = worker.makeDrvOutputSubstitutionGoal(id);
+
     bool resolve = shouldResolve(drv);
-    if (nrFailed == 0 && (!resolve || !hasLocalRecordsBelow(drv))) {
+
+    /* Created before the unresolved key is awaited so the inputs are
+       walked while it is in flight. A goal that finishes first has no
+       waiters left to wake, so only unfinished ones are awaited. */
+    std::map<SingleDerivedPath::Built, std::shared_ptr<BuildTraceLookupGoal>> inputGoals;
+    if (resolve)
+        for (auto & input : drv.inputs)
+            if (auto * built = std::get_if<SingleDerivedPath::Built>(&input.raw()))
+                inputGoals.insert_or_assign(*built, worker.makeBuildTraceLookupGoal(*built));
+
+    if (!unresolvedGoal->exitCode)
+        co_await await({unresolvedGoal});
+
+    if (unresolvedGoal->exitCode == ecSuccess && (!resolve || !hasLocalRecordsBelow(drv))) {
         substituted = true;
         traceKey = id;
         outputInfo = unresolvedGoal->outputInfo;
@@ -173,20 +192,16 @@ Goal::Co<Goal::ExitCode> BuildTraceLookupGoal::queryRemote(const StorePath & drv
     if (!resolve)
         co_return ecNoSubstituters;
 
-    nrFailed = nrNoSubstituters = 0;
-
-    std::map<SingleDerivedPath::Built, std::shared_ptr<BuildTraceLookupGoal>> inputGoals;
     Goals waitees;
-    for (auto & input : drv.inputs)
-        if (auto * built = std::get_if<SingleDerivedPath::Built>(&input.raw())) {
-            auto goal = worker.makeBuildTraceLookupGoal(*built);
+    for (auto & [_, goal] : inputGoals)
+        if (!goal->exitCode)
             waitees.insert(goal);
-            inputGoals.insert_or_assign(*built, std::move(goal));
-        }
 
     co_await await(std::move(waitees));
-    if (nrFailed != 0)
-        co_return ecNoSubstituters;
+    nrFailed = nrNoSubstituters = 0;
+    for (auto & [_, goal] : inputGoals)
+        if (goal->exitCode != ecSuccess)
+            co_return ecNoSubstituters;
 
     auto resolved = tryResolve(
         drv,
