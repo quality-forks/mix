@@ -317,19 +317,22 @@ void HttpBinaryCacheStore::getFile(const std::string & path, Callback<std::optio
 
         auto request(makeRequest(path));
 
-        fileTransfer->enqueueFileTransfer(request, {[callbackPtr, this](std::future<FileTransferResult> result) {
-                                              try {
-                                                  (*callbackPtr)(std::move(result.get().data));
-                                              } catch (FileTransferError & e) {
-                                                  if (e.error == FileTransfer::NotFound
-                                                      || e.error == FileTransfer::Forbidden)
-                                                      return (*callbackPtr)({});
-                                                  disable(e);
-                                                  callbackPtr->rethrow();
-                                              } catch (...) {
-                                                  callbackPtr->rethrow();
-                                              }
-                                          }});
+        /* The transfer thread outlives the store, which exit() may be
+           destroying when a timed out request finishes. */
+        fileTransfer->enqueueFileTransfer(
+            request, {[callbackPtr, weak = weak_from_this()](std::future<FileTransferResult> result) {
+                try {
+                    (*callbackPtr)(std::move(result.get().data));
+                } catch (FileTransferError & e) {
+                    if (e.error == FileTransfer::NotFound || e.error == FileTransfer::Forbidden)
+                        return (*callbackPtr)({});
+                    if (auto store = weak.lock())
+                        std::static_pointer_cast<HttpBinaryCacheStore>(store)->disable(e);
+                    callbackPtr->rethrow();
+                } catch (...) {
+                    callbackPtr->rethrow();
+                }
+            }});
 
     } catch (...) {
         callbackPtr->rethrow();
