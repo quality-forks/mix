@@ -20,6 +20,7 @@
 #include "nix/store/store-registration.hh"
 
 #include <algorithm>
+#include <thread>
 #include <cstring>
 
 #include <memory>
@@ -144,7 +145,10 @@ LocalStore::LocalStore(ref<const Config> config)
     , schemaPath(dbDir / "schema")
     , tempRootsDir(config->stateDir.get() / "temproots")
     , fnTempRoots(tempRootsDir / std::to_string(getpid()))
-    , readers(make_ref<Pool<Reader>>(std::numeric_limits<size_t>::max(), [this]() {
+    /* Each connection keeps its own page cache and the pool never closes an
+       idle one, so the most lookups ever in flight at once would stay open
+       for the life of the process. */
+    , readers(make_ref<Pool<Reader>>(std::max(1U, std::thread::hardware_concurrency()), [this]() {
         auto reader = make_ref<Reader>();
         reader->db = SQLite(
             dbDir / "db.sqlite",
