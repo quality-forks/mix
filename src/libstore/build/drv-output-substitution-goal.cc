@@ -23,6 +23,11 @@ Goal::Co<Goal::ExitCode> DrvOutputSubstitutionGoal::init()
         co_return ecSuccess;
     }
 
+    if (auto substituted = get(worker.substitutedRealisations, id)) {
+        outputInfo = *substituted;
+        co_return ecSuccess;
+    }
+
     auto subs = worker.getSubstituters();
 
     bool substituterFailed = false;
@@ -51,6 +56,7 @@ Goal::Co<Goal::ExitCode> DrvOutputSubstitutionGoal::init()
         }
 
         trace("finished");
+        worker.substitutedRealisations.insert_or_assign(id, outputInfo);
         co_return ecSuccess;
     }
 

@@ -348,6 +348,13 @@ public:
     std::set<SingleDerivedPath::Built> buildTraceMisses;
 
     /**
+     * Build trace entries substituted in this run, since a goal only
+     * registers its entry once the whole build is done, and another goal
+     * asking for the same key before then would download it again.
+     */
+    std::map<DrvOutput, std::shared_ptr<const UnkeyedRealisation>> substitutedRealisations;
+
+    /**
      * Make a goal corresponding to the `DerivedPath`.
      *
      * It will be a `DerivationGoal` for a `DerivedPath::Built` or
