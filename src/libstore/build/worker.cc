@@ -288,6 +288,11 @@ void Worker::waitForAWhile(GoalPtr goal)
     addToWeakGoals(waitingForAWhile, goal);
 }
 
+void Worker::waitUntil(GoalPtr goal, steady_time_point deadline)
+{
+    waitingUntil.emplace(deadline, goal);
+}
+
 void Worker::waitForCompletion(GoalPtr goal)
 {
     goal->trace("waiting for completion callback");
@@ -360,7 +365,7 @@ void Worker::run(const Goals & _topGoals)
             break;
 
         /* Wait for input or completion callbacks. */
-        if (!children.empty() || !waitingForAWhile.empty() || !waitingForCompletion.empty())
+        if (!children.empty() || !waitingForAWhile.empty() || !waitingForCompletion.empty() || !waitingUntil.empty())
             waitForInput();
         else if (awake.empty() && 0U == settings.maxBuildJobs) {
             if (Machine::parseConfig({nix::settings.thisSystem}, nix::settings.getWorkerSettings().builders).empty())
@@ -438,8 +443,18 @@ void Worker::waitForInput()
     } else
         lastWokenUp = steady_time_point::min();
 
+    std::optional<unsigned int> timeoutMs;
     if (useTimeout)
-        vomit("sleeping %d seconds", timeout);
+        timeoutMs = timeout * 1000;
+    if (!waitingUntil.empty()) {
+        auto untilFirst = (unsigned int) std::max(
+            0L,
+            (long) std::chrono::duration_cast<std::chrono::milliseconds>(waitingUntil.begin()->first - before).count());
+        timeoutMs = std::min(timeoutMs.value_or(untilFirst), untilFirst);
+    }
+
+    if (timeoutMs)
+        vomit("sleeping %d milliseconds", *timeoutMs);
 
     MuxablePipePollState state;
 
@@ -470,7 +485,7 @@ void Worker::waitForInput()
 #ifdef _WIN32
         ioport.get(),
 #endif
-        useTimeout ? (std::optional{timeout * 1000}) : std::nullopt);
+        timeoutMs);
 
     auto after = steady_time_point::clock::now();
 
@@ -519,6 +534,12 @@ void Worker::waitForInput()
     /* Slightly less optimal on windows. We don't use a wakeup pipe and signal the ioport directly. */
     wakerState->wakeAll(*this);
 #endif
+
+    while (!waitingUntil.empty() && waitingUntil.begin()->first <= after) {
+        if (auto goal = waitingUntil.begin()->second.lock())
+            wakeUp(goal);
+        waitingUntil.erase(waitingUntil.begin());
+    }
 
     if (!waitingForAWhile.empty() && lastWokenUp + std::chrono::seconds(settings.pollInterval) <= after) {
         lastWokenUp = after;

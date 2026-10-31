@@ -170,11 +170,18 @@ Goal::Co<Goal::ExitCode> BuildTraceLookupGoal::queryRemote(const StorePath & drv
 
     bool resolve = shouldResolve(drv);
 
-    /* Created before the unresolved key is awaited so the inputs are
-       walked while it is in flight. A goal that finishes first has no
-       waiters left to wake, so only unfinished ones are awaited. */
+    /* The inputs are walked while the unresolved key is in flight, but
+       only once it has been out longer than a hit takes (0.23 s through
+       ncro), since every input below a hit would be asked for in vain. A
+       goal that finishes first has no waiters left to wake, so only
+       unfinished ones are awaited. */
+    if (resolve && !unresolvedGoal->exitCode) {
+        worker.waitUntil(shared_from_this(), std::chrono::steady_clock::now() + std::chrono::milliseconds(300));
+        co_await Suspend{};
+    }
+
     std::map<SingleDerivedPath::Built, std::shared_ptr<BuildTraceLookupGoal>> inputGoals;
-    if (resolve)
+    if (resolve && !(unresolvedGoal->exitCode == ecSuccess && !hasLocalRecordsBelow(drv)))
         for (auto & input : drv.inputs)
             if (auto * built = std::get_if<SingleDerivedPath::Built>(&input.raw()))
                 inputGoals.insert_or_assign(*built, worker.makeBuildTraceLookupGoal(*built));

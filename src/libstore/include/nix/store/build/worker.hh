@@ -174,6 +174,11 @@ private:
     WeakGoals waitingForCompletion;
 
     /**
+     * Goals to wake at a point in time, soonest first.
+     */
+    std::multimap<steady_time_point, WeakGoalPtr> waitingUntil;
+
+    /**
      * Last time the goals in `waitingForAWhile` were woken up.
      */
     steady_time_point lastWokenUp;
@@ -422,6 +427,11 @@ public:
      * Wait until explicitly resumed by Waker::enqueue.
      */
     void waitForCompletion(GoalPtr goal);
+
+    /**
+     * Wake this goal once `deadline` has passed.
+     */
+    void waitUntil(GoalPtr goal, steady_time_point deadline);
 
     /**
      * Loop until the specified top-level goals have finished.
