@@ -161,6 +161,7 @@ static OsStringMap createSSHEnv()
 std::unique_ptr<SSHMaster::Connection> SSHMaster::startCommand(OsStrings && command, OsStrings && extraSshArgs)
 {
     std::filesystem::path socketPath = startMaster();
+    bool muxed = !fakeSSH && !useMaster && isMasterRunning();
 
     Pipe in, out;
     in.create();
@@ -179,6 +180,10 @@ std::unique_ptr<SSHMaster::Connection> SSHMaster::startCommand(OsStrings && comm
     if (!fakeSSH) {
         program = sshProgram();
         args = {string_to_os_string(hostnameAndUser), OS_STR("-x")};
+        if (muxed)
+            args.insert(args.end(), {OS_STR("-oControlMaster=no"), OS_STR("-oPermitLocalCommand=no")});
+        else if (!useMaster)
+            args.push_back(OS_STR("-oControlMaster=yes"));
         addCommonSSHOpts(args);
         if (!socketPath.empty())
             args.insert(args.end(), {OS_STR("-S"), socketPath.native()});
@@ -216,7 +221,7 @@ std::unique_ptr<SSHMaster::Connection> SSHMaster::startCommand(OsStrings && comm
 
     // Wait for the SSH connection to be established,
     // So that we don't overwrite the password prompt with our progress bar.
-    if (!fakeSSH && !useMaster && !isMasterRunning()) {
+    if (!fakeSSH && !useMaster && !muxed) {
         std::string reply;
         try {
             reply = readLine(out.readSide.get());
