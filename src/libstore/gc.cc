@@ -393,6 +393,8 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
         // Hash part of the store path currently being deleted, if
         // any.
         std::optional<std::string> pending;
+
+        boost::unordered_flat_set<std::string, StringViewHash, std::equal_to<>> deleting;
     };
 
     Sync<Shared> _shared;
@@ -510,7 +512,7 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
                                    done. FIXME: ideally we would use a
                                    FD for this so we don't block the
                                    poll loop. */
-                                while (shared->pending == hashPart) {
+                                while (shared->pending == hashPart || shared->deleting.contains(hashPart)) {
                                     debug("synchronising with deletion of path '%s'", path);
                                     shared.wait(wakeup);
                                 }
@@ -738,22 +740,25 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
                     options.pathsToDelete);
             }
         }
-        for (auto & path : topoSortPaths(visited)) {
-            if (!dead.insert(path).second)
-                continue;
-            if (shouldDelete) {
-                /* Re-check tempRoots before deleting and set pending
-                   to synchronise with addTempRoot. Between the BFS
-                   and this deletion loop, new temproots may have been
-                   added via the GC socket by a concurrent process
-                   (e.g. an evaluator calling addTempRoot). The BFS
-                   only checks tempRoots when it first visits a path,
-                   but the "pending" mechanism only blocks the socket
-                   handler for the single path currently being visited,
-                   not for paths already queued for deletion. */
-                {
+        auto sorted = topoSortPaths(visited);
+        for (size_t begin = 0; begin < sorted.size(); begin += 1024) {
+            StorePaths batch;
+            {
+                /* Re-check tempRoots before deleting and mark the batch
+                   as deleting to synchronise with addTempRoot. Between
+                   the BFS and this deletion loop, new temproots may
+                   have been added via the GC socket by a concurrent
+                   process (e.g. an evaluator calling addTempRoot). The
+                   BFS only checks tempRoots when it first visits a
+                   path, but the "pending" mechanism only blocks the
+                   socket handler for the single path currently being
+                   visited, not for paths already queued for deletion. */
+                auto shared(_shared.lock());
+                for (auto i = begin; i < std::min(begin + 1024, sorted.size()); ++i) {
+                    auto & path = sorted[i];
+                    if (!dead.insert(path).second || !shouldDelete)
+                        continue;
                     auto hashPart = std::string(path.hashPart());
-                    auto shared(_shared.lock());
                     if (shared->tempRoots.contains(hashPart)) {
                         debug(
                             "not deleting '%s' because it became a temporary root after initial scan",
@@ -761,22 +766,27 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
                         markAlive(path);
                         continue;
                     }
-                    shared->pending = hashPart;
+                    shared->deleting.insert(std::move(hashPart));
+                    batch.push_back(path);
                 }
-                Finally resetPending([&]() {
-                    auto shared(_shared.lock());
-                    shared->pending.reset();
-                    wakeup.notify_all();
-                });
-                try {
-                    invalidatePathChecked(path);
-                    deleteFromStore(path.to_string(), true);
-                    referrersCache.erase(path);
-                } catch (PathInUse & e) {
+            }
+            if (batch.empty())
+                continue;
+            Finally resetDeleting([&]() {
+                auto shared(_shared.lock());
+                shared->deleting.clear();
+                wakeup.notify_all();
+            });
+            auto inUse = invalidatePathsChecked(batch);
+            for (auto & path : batch) {
+                if (inUse.contains(path)) {
                     // If we end up here, it's likely a new occurrence
                     // of https://github.com/NixOS/nix/issues/11923
-                    printError("BUG: %s", e.what());
+                    printError("BUG: cannot delete path '%s' because it is still in use", printStorePath(path));
+                    continue;
                 }
+                deleteFromStore(path.to_string(), true);
+                referrersCache.erase(path);
             }
         }
     };

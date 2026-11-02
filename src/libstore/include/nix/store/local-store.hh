@@ -189,8 +189,6 @@ public:
     StoreReference getReference() const override;
 };
 
-MakeError(PathInUse, Error);
-
 class LocalStore : public virtual IndirectRootStore, public virtual GcStore
 {
     void anchor() override;
@@ -539,9 +537,10 @@ private:
     void invalidatePath(State & state, const StorePath & path);
 
     /**
-     * Delete a path from the Nix store.
+     * Delete paths from the Nix store in one transaction, returning
+     * those left valid because something still refers to them.
      */
-    void invalidatePathChecked(const StorePath & path);
+    StorePathSet invalidatePathsChecked(const StorePaths & paths);
 
     std::shared_ptr<const ValidPathInfo> queryPathInfoInternal(State & state, const StorePath & path);
 

@@ -1573,28 +1573,35 @@ std::pair<std::filesystem::path, AutoCloseFD> LocalStore::createTempDirInStore()
     return {tmpDirFn, std::move(tmpDirFd)};
 }
 
-void PathInUse::anchor() {}
-
-void LocalStore::invalidatePathChecked(const StorePath & path)
+/* A path's Refs rows sit all over IndexReference, so one transaction
+   per path rewrites the same index pages into the WAL for every path,
+   and a batch's dirty pages overflow SQLite's default 2 MB cache and
+   get spilled to the WAL before the commit. */
+StorePathSet LocalStore::invalidatePathsChecked(const StorePaths & paths)
 {
-    retrySQLite<void>([&]() {
+    return retrySQLite<StorePathSet>([&]() {
         auto state(_state->lock());
 
-        SQLiteTxn txn(state->db);
+        state->db.exec("pragma cache_size = -2097152");
 
-        if (isValidPath_(*state, path)) {
+        SQLiteTxn txn(state->db);
+        StorePathSet inUse;
+
+        for (auto & path : paths) {
+            if (!isValidPath_(*state, path))
+                continue;
+
             StorePathSet referrers;
             queryReferrers(*state, path, referrers);
             referrers.erase(path); /* ignore self-references */
-            if (!referrers.empty())
-                throw PathInUse(
-                    "cannot delete path '%s' because it is in use by %s",
-                    printStorePath(path),
-                    concatMapStringsSep(", ", referrers, [&](auto & p) { return "'" + printStorePath(p) + "'"; }));
-            invalidatePath(*state, path);
+            if (referrers.empty())
+                invalidatePath(*state, path);
+            else
+                inUse.insert(path);
         }
 
         txn.commit();
+        return inUse;
     });
 }
 
