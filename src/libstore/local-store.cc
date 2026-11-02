@@ -722,9 +722,14 @@ void LocalStore::makeStoreWritable()
 void LocalStore::registerDrvOutput(const Realisation & info, CheckSigsFlag checkSigs)
 {
     experimentalFeatureSettings.require(Xp::CaDerivations);
-    if (checkSigs == NoCheckSigs || !realisationIsUntrusted(info))
+    if (checkSigs == NoCheckSigs || !realisationIsUntrusted(info)) {
         registerDrvOutputUnchecked(info);
-    else
+        return;
+    }
+
+    auto existing =
+        retrySQLite<std::optional<const UnkeyedRealisation>>([&]() { return queryRealisation_(*_state->lock(), info.id); });
+    if (!existing || !info.isCompatibleWith(*existing))
         throw Error(
             "cannot register realisation '%s' because it lacks a signature by a trusted key", info.outPath.to_string());
 }
