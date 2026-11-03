@@ -90,4 +90,5 @@ in
 {
   unstructured = buildDynamic baseAttrs;
   structured = buildDynamic (baseAttrs // { __structuredAttrs = true; });
+  transientProducer = mkDerivation (baseAttrs // { __transient = true; });
 }

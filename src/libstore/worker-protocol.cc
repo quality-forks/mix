@@ -118,6 +118,8 @@ GCAction WorkerProto::Serialise<GCAction>::read(const StoreDirConfig & store, Wo
         return gcDeleteDead;
     case 3:
         return gcDeleteSpecific;
+    case 4:
+        return gcEvictTransient;
     default:
         throw Error("Invalid GC action");
     }
@@ -139,6 +141,9 @@ void WorkerProto::Serialise<GCAction>::write(
         break;
     case gcDeleteSpecific:
         conn.to << unsigned{3};
+        break;
+    case gcEvictTransient:
+        conn.to << unsigned{4};
         break;
     default:
         assert(false);

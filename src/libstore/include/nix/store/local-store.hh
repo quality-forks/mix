@@ -9,6 +9,7 @@
 #include "nix/util/sync.hh"
 #include "nix/util/pool.hh"
 
+#include <atomic>
 #include <chrono>
 #include <future>
 #include <string>
@@ -238,6 +239,14 @@ private:
          */
         uint64_t availAfterGC = std::numeric_limits<uint64_t>::max();
 
+        /**
+         * The last time a build checked whether transient paths need
+         * evicting, and the thread evicting them.
+         */
+        std::chrono::time_point<std::chrono::steady_clock> lastEvictionCheck;
+        bool evicting = false;
+        std::thread evictionThread;
+
         std::unique_ptr<PublicKeys> publicKeys;
     };
 
@@ -246,6 +255,12 @@ private:
      * between immutable and mutable fields.
      */
     ref<Sync<State>> _state;
+
+    /**
+     * Stops the eviction thread after its current batch, so a build that
+     * ends waits for one batch at most.
+     */
+    std::atomic<bool> evictionCancelled = false;
 
     /**
      * Connections that only read, so a lookup on one thread does not wait
@@ -391,6 +406,41 @@ public:
     bool hasAnyRecordOf(const StorePathSet & drvPaths);
 
     /**
+     * Mark `paths` transient, or note a use of those that already are.
+     */
+    void markTransient(const StorePathSet & paths);
+
+    /**
+     * Note a use of each of `paths` that is transient.
+     */
+    void touchTransient(const StorePathSet & paths);
+
+    StorePathSet queryTransientPaths();
+
+    /**
+     * The total NAR size of the transient paths.
+     */
+    uint64_t queryTransientSize();
+
+    struct EvictableTransient
+    {
+        StorePath path;
+        uint64_t narSize;
+        time_t lastUsed;
+    };
+
+    /**
+     * The transient paths no other valid path refers to, least recently
+     * used first.
+     */
+    std::vector<EvictableTransient> queryEvictableTransient();
+
+    /**
+     * Delete the build trace entries whose output is one of `outputs`.
+     */
+    void forgetBuildTracesOf(const StorePathSet & outputs);
+
+    /**
      * Called by `collectGarbage` to trace in reverse.
      *
      * Using this rather than `queryReferrers` directly allows us to
@@ -484,6 +534,14 @@ public:
      * garbage until it exceeds maxFree.
      */
     void autoGC(bool sync = true);
+
+    /**
+     * Evict transient paths in the background if `transient-store-size`
+     * asks for it. The thread uses statics that `exit` destroys, so its
+     * starter stops it with `joinTransientEviction` before returning.
+     */
+    void startTransientEviction();
+    void joinTransientEviction();
 
     /**
      * Register the store path 'output' as the output named 'outputName' of

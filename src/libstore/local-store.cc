@@ -123,6 +123,12 @@ struct LocalStore::State::Stmts
     SQLiteStmt QuerySettledResolution;
     SQLiteStmt ClearSettledResolutions;
     SQLiteStmt QueryAnyRecordOf;
+    SQLiteStmt MarkTransient;
+    SQLiteStmt TouchTransient;
+    SQLiteStmt QueryTransientPaths;
+    SQLiteStmt QueryTransientSize;
+    SQLiteStmt QueryEvictableTransient;
+    SQLiteStmt ForgetBuildTracesOf;
     SQLiteStmt QueryPathFromHashPart;
     SQLiteStmt QueryValidPaths;
 };
@@ -455,7 +461,35 @@ LocalStore::LocalStore(ref<const Config> config)
                     select exists (select 1 from BuildTraceV3 where drvPath in (select value from json_each(?1)))
                         or exists (select 1 from SettledResolutions where drvPath in (select value from json_each(?1)));
                 )");
+            state->stmts->ForgetBuildTracesOf.create(
+                state->db, "delete from BuildTraceV3 where outputPath in (select value from json_each(?1));");
         }
+    }
+    if (!config->readOnly) {
+        state->stmts->MarkTransient.create(
+            state->db,
+            R"(
+                insert into Transient (path, lastUsed)
+                    select id, ?2 from ValidPaths where path in (select value from json_each(?1))
+                    on conflict (path) do update set lastUsed = excluded.lastUsed;
+            )");
+        state->stmts->TouchTransient.create(
+            state->db,
+            R"(
+                update Transient set lastUsed = ?2
+                    where path in (select id from ValidPaths where path in (select value from json_each(?1)));
+            )");
+        state->stmts->QueryTransientPaths.create(
+            state->db, "select v.path from Transient t join ValidPaths v on v.id = t.path;");
+        state->stmts->QueryTransientSize.create(
+            state->db, "select coalesce(sum(v.narSize), 0) from Transient t join ValidPaths v on v.id = t.path;");
+        state->stmts->QueryEvictableTransient.create(
+            state->db,
+            R"(
+                select v.path, coalesce(v.narSize, 0), t.lastUsed from Transient t join ValidPaths v on v.id = t.path
+                    where not exists (select 1 from Refs r where r.reference = t.path and r.referrer != t.path)
+                    order by t.lastUsed;
+            )");
     }
 }
 
@@ -507,6 +541,8 @@ LocalStore::~LocalStore()
         if (state->gcThread.joinable())
             state->gcThread.join();
     }
+
+    joinTransientEviction();
 
     try {
         auto fdTempRoots(_fdTempRoots.lock());
@@ -701,9 +737,17 @@ bool LocalStore::upgradeDBSchema(State & state, bool dryRun)
         maybeUpgrade(
             "20261022-settled-resolutions",
             "create table if not exists SettledResolutions (drvPath text primary key not null, resolvedPath text not null, outputs text not null)");
+        maybeUpgrade(
+            "20261102-build-trace-output-index",
+            "create index if not exists IndexBuildTraceV3Output on BuildTraceV3(outputPath)");
     }
 
     maybeUpgrade("20260309-drop-redundant-indexreferrer", "drop index if exists IndexReferrer");
+
+    maybeUpgrade(
+        "20261102-transient",
+        "create table if not exists Transient (path integer primary key not null references ValidPaths(id) on delete cascade, lastUsed integer not null);\n"
+        "create index if not exists IndexTransientLastUsed on Transient(lastUsed)");
 
     return ret;
 }
@@ -822,6 +866,88 @@ bool LocalStore::hasAnyRecordOf(const StorePathSet & drvPaths)
         auto state(_state->lock());
         auto query(state->stmts->QueryAnyRecordOf.use().apply(names.dump()));
         return query.next() && query.getInt(0) != 0;
+    });
+}
+
+static std::string pathsJson(const Store & store, const StorePathSet & paths)
+{
+    auto json = nlohmann::json::array();
+    for (auto & path : paths)
+        json.push_back(store.printStorePath(path));
+    return json.dump();
+}
+
+void LocalStore::markTransient(const StorePathSet & paths)
+{
+    if (config->readOnly || paths.empty())
+        return;
+    retrySQLite<void>([&]() {
+        auto state(_state->lock());
+        state->stmts->MarkTransient.use().apply(pathsJson(*this, paths)).apply(time(nullptr)).exec();
+    });
+}
+
+void LocalStore::touchTransient(const StorePathSet & paths)
+{
+    if (config->readOnly || paths.empty())
+        return;
+    retrySQLite<void>([&]() {
+        auto state(_state->lock());
+        state->stmts->TouchTransient.use().apply(pathsJson(*this, paths)).apply(time(nullptr)).exec();
+    });
+}
+
+StorePathSet LocalStore::queryTransientPaths()
+{
+    if (config->readOnly)
+        return {};
+    return retrySQLite<StorePathSet>([&]() {
+        auto state(_state->lock());
+        StorePathSet paths;
+        auto query(state->stmts->QueryTransientPaths.use());
+        while (query.next())
+            paths.insert(parseStorePath(query.getStr(0)));
+        return paths;
+    });
+}
+
+uint64_t LocalStore::queryTransientSize()
+{
+    if (config->readOnly)
+        return 0;
+    return retrySQLite<uint64_t>([&]() {
+        auto state(_state->lock());
+        auto query(state->stmts->QueryTransientSize.use());
+        query.next();
+        return static_cast<uint64_t>(query.getInt(0));
+    });
+}
+
+std::vector<LocalStore::EvictableTransient> LocalStore::queryEvictableTransient()
+{
+    if (config->readOnly)
+        return {};
+    return retrySQLite<std::vector<EvictableTransient>>([&]() {
+        auto state(_state->lock());
+        std::vector<EvictableTransient> evictable;
+        auto query(state->stmts->QueryEvictableTransient.use());
+        while (query.next())
+            evictable.push_back({
+                .path = parseStorePath(query.getStr(0)),
+                .narSize = static_cast<uint64_t>(query.getInt(1)),
+                .lastUsed = static_cast<time_t>(query.getInt(2)),
+            });
+        return evictable;
+    });
+}
+
+void LocalStore::forgetBuildTracesOf(const StorePathSet & outputs)
+{
+    if (config->readOnly || outputs.empty() || !experimentalFeatureSettings.isEnabled(Xp::CaDerivations))
+        return;
+    retrySQLite<void>([&]() {
+        auto state(_state->lock());
+        state->stmts->ForgetBuildTracesOf.use().apply(pathsJson(*this, outputs)).exec();
     });
 }
 

@@ -17,5 +17,6 @@
   "passAsFile": [],
   "preferLocalBuild": false,
   "requiredSystemFeatures": [],
+  "transient": false,
   "unsafeDiscardReferences": {}
 }

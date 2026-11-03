@@ -77,6 +77,14 @@ public:
     virtual void submitOutput(const SingleDerivedPath & path, const OutputName & output) = 0;
 
     /**
+     * Whether the paths the builder adds to the store are transient.
+     */
+    virtual bool transient()
+    {
+        return false;
+    }
+
+    /**
      * Add 'path' to the set of paths that may be referenced by the
      * outputs, and make it appear in the sandbox.
      */

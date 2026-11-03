@@ -94,6 +94,25 @@ public:
         {"gc-keep-derivations"},
     };
 
+    Setting<uint64_t> transientStoreSize{
+        this,
+        100ULL * 1024 * 1024 * 1024,
+        "transient-store-size",
+        R"(
+          How many bytes of transient store paths, the outputs of
+          derivations that set `__transient` and the paths those add while
+          building, the store keeps. Builds check every
+          `min-free-check-interval` seconds, and the garbage collector before
+          its walk. Either evicts the least recently used ones that nothing
+          else refers to until they fit, and at most every ten minutes the
+          transient derivation files unused for ten minutes whatever the
+          size, since a build trace finds their outputs without them. A root
+          or a running build keeps a transient path, `keep-outputs` and
+          `keep-derivations` never do, and a transient path keeps every path
+          it refers to.
+        )",
+    };
+
     Setting<uint64_t> minFree{
         this,
         0,

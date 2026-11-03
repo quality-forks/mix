@@ -201,6 +201,15 @@ struct Options
      */
     bool allowSubstitutes = true;
 
+    /**
+     * env: __transient
+     *
+     * Everything the derivation makes, its outputs and what it adds to the
+     * store while building, is a cache the store evicts under
+     * `transient-store-size` rather than keeps for its roots.
+     */
+    bool transient = false;
+
     bool operator==(const Options &) const = default;
 
     /**

@@ -187,6 +187,14 @@ Goal::Co<Goal::ExitCode> DerivationBuildingGoal::init()
         },
         result);
 
+    if (auto * localStore = dynamic_cast<LocalStore *>(&worker.store); localStore && transient)
+        if (auto * success = std::get_if<BuildResult::Success>(&result)) {
+            StorePathSet outputs;
+            for (auto & [_, output] : success->builtOutputs)
+                outputs.insert(output.outPath);
+            localStore->markTransient(outputs);
+        }
+
     buildResult.inner = std::move(result);
     worker.updateProgress();
     co_return exitCode;
@@ -403,6 +411,10 @@ Goal::Co<DerivationBuildingGoal::Result> DerivationBuildingGoal::tryToBuild()
             throw;
         }
     }();
+    transient = drvOptions.transient;
+
+    if (auto * localStore = dynamic_cast<LocalStore *>(&worker.store))
+        localStore->touchTransient(inputPaths);
 
     std::map<std::string, InitialOutput> initialOutputs;
 
