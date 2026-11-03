@@ -37,6 +37,18 @@ Goal::Co<Goal::ExitCode> BuildTraceLookupGoal::init(std::shared_ptr<const Deriva
     concreteDrvPath = *drvPath;
 
     if (!drv)
+        drv = readLocalDerivation(*drvPath);
+
+    /* A planned build drops a derivation's file once it is built and keeps
+       its build trace entry, whose output stands without the file. */
+    if (!drv)
+        if (auto local = queryLocalTrace(*drvPath)) {
+            traceKey = local->id;
+            outputInfo = std::make_shared<const UnkeyedRealisation>(std::move(*local));
+            co_return ecSuccess;
+        }
+
+    if (!drv)
         drv = co_await readDerivation(*drvPath);
 
     if (!drv || type(*drv).isImpure() || !drv->outputs.contains(req.output))
@@ -71,12 +83,16 @@ Goal::Co<std::optional<StorePath>> BuildTraceLookupGoal::obtainDrvPath()
     co_return producerGoal->outputInfo->outPath;
 }
 
-Goal::Co<std::shared_ptr<const Derivation>> BuildTraceLookupGoal::readDerivation(const StorePath & drvPath)
+std::shared_ptr<const Derivation> BuildTraceLookupGoal::readLocalDerivation(const StorePath & drvPath)
 {
     for (auto * drvStore : {&worker.evalStore, &worker.store})
         if (drvStore->isValidPath(drvPath))
-            co_return std::make_shared<const Derivation>(drvStore->readDerivation(drvPath));
+            return std::make_shared<const Derivation>(drvStore->readDerivation(drvPath));
+    return nullptr;
+}
 
+Goal::Co<std::shared_ptr<const Derivation>> BuildTraceLookupGoal::readDerivation(const StorePath & drvPath)
+{
     /* The unresolved key needs only the path, so it is asked for during
        the narinfo and NAR round trips below. */
     if (!worker.buildTraceMisses.contains(req))
@@ -119,7 +135,7 @@ Goal::Co<std::shared_ptr<const Derivation>> BuildTraceLookupGoal::readDerivation
     co_return nullptr;
 }
 
-std::optional<Realisation> BuildTraceLookupGoal::queryLocalRecord(const StorePath & drvPath, const Derivation & drv)
+std::optional<Realisation> BuildTraceLookupGoal::queryLocalTrace(const StorePath & drvPath)
 {
     DrvOutput id{drvPath, req.output};
 
@@ -134,6 +150,15 @@ std::optional<Realisation> BuildTraceLookupGoal::queryLocalRecord(const StorePat
                 return Realisation{*real, resolvedId};
         }
 
+    return std::nullopt;
+}
+
+std::optional<Realisation> BuildTraceLookupGoal::queryLocalRecord(const StorePath & drvPath, const Derivation & drv)
+{
+    if (auto local = queryLocalTrace(drvPath))
+        return local;
+
+    DrvOutput id{drvPath, req.output};
     if (auto path = drv.outputs.at(req.output).path(worker.store, drv.name, req.output))
         return Realisation{{.outPath = std::move(*path)}, id};
 

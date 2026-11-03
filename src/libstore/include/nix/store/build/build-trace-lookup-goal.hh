@@ -62,7 +62,9 @@ private:
 
     Co<ExitCode> init(std::shared_ptr<const Derivation> drv);
     Co<std::optional<StorePath>> obtainDrvPath();
+    std::shared_ptr<const Derivation> readLocalDerivation(const StorePath & drvPath);
     Co<std::shared_ptr<const Derivation>> readDerivation(const StorePath & drvPath);
+    std::optional<Realisation> queryLocalTrace(const StorePath & drvPath);
     std::optional<Realisation> queryLocalRecord(const StorePath & drvPath, const Derivation & drv);
     Co<ExitCode> queryRemote(const StorePath & drvPath, const Derivation & drv);
 

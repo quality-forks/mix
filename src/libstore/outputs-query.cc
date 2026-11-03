@@ -252,6 +252,19 @@ static std::optional<StorePath> deepQueryPartialDerivationOutputImpl(
 {
     auto & evalStore = evalStore_ ? *evalStore_ : store;
 
+    /* A build trace entry outlives a derivation evicted once built, and
+       names its output without it. */
+    if (experimentalFeatureSettings.isEnabled(Xp::CaDerivations) && !evalStore.isValidPath(drvPath)
+        && !store.isValidPath(drvPath)) {
+        if (auto realisation = queryRealisation({drvPath, outputName}))
+            return realisation->outPath;
+        if (auto * localStore = caches.store ? dynamic_cast<LocalStore *>(&store) : nullptr)
+            if (auto kept = localStore->querySettledResolution(drvPath))
+                if (auto realisation = queryRealisation({kept->path, outputName}))
+                    return realisation->outPath;
+        return std::nullopt;
+    }
+
     auto staticResult = evalStore.queryStaticPartialDerivationOutput(drvPath, outputName);
     if (staticResult || !experimentalFeatureSettings.isEnabled(Xp::CaDerivations))
         return staticResult;

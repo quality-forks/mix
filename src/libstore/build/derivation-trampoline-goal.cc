@@ -96,7 +96,7 @@ Goal::Co<std::optional<DerivationTrampolineGoal::Result>> DerivationTrampolineGo
 {
     auto * outputNames = std::get_if<OutputsSpec::Names>(&wantedOutputs.raw);
     if (buildMode != bmNormal || !outputNames || !std::holds_alternative<SingleDerivedPath::Built>(drvReq->raw())
-        || !worker.settings.useSubstitutes || !experimentalFeatureSettings.isEnabled(Xp::CaDerivations))
+        || !experimentalFeatureSettings.isEnabled(Xp::CaDerivations))
         co_return std::nullopt;
 
     std::map<std::string, std::shared_ptr<BuildTraceLookupGoal>> lookups;
