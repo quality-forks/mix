@@ -137,6 +137,11 @@ protected:
         return !usingSubmitted;
     }
 
+    bool transient() override
+    {
+        return drvOptions.transient;
+    }
+
     void submitOutput(const SingleDerivedPath & path, const OutputName & output) override;
 
     friend struct RestrictedStore;

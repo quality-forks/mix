@@ -248,6 +248,8 @@ void RestrictedStore::addToStore(
     const ValidPathInfo & info, Source & narSource, RepairFlag repair, CheckSigsFlag checkSigs)
 {
     next->addToStore(info, narSource, repair, checkSigs);
+    if (goal.transient())
+        next->markTransient({info.path});
     goal.addDependency(info.path);
 }
 
@@ -261,6 +263,8 @@ StorePath RestrictedStore::addToStoreFromDump(
     RepairFlag repair)
 {
     auto path = next->addToStoreFromDump(dump, name, dumpMethod, hashMethod, hashAlgo, references, repair);
+    if (goal.transient())
+        next->markTransient({path});
     goal.addDependency(path);
     return path;
 }
@@ -300,6 +304,8 @@ ref<const ValidPathInfo> RestrictedStore::addToStoreScanning(
 {
     auto path = next->addToStoreFromDump(
         dump, name, dumpMethod, hashMethod, hashAlgo, queryAllValidPaths(), RepairFlag::NoRepair, true);
+    if (goal.transient())
+        next->markTransient({path});
     goal.addDependency(path);
     return queryPathInfo(path);
 }

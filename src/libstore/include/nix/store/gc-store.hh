@@ -26,12 +26,16 @@ typedef boost::unordered_flat_map<
  *
  * - `gcDeleteSpecific`: delete the paths listed in
  *    `pathsToDelete`, insofar as they are not reachable.
+ *
+ * - `gcEvictTransient`: delete only the transient paths that
+ *    `transient-store-size` gives up.
  */
 enum class GCAction {
     gcReturnLive,
     gcReturnDead,
     gcDeleteDead,
     gcDeleteSpecific,
+    gcEvictTransient,
 };
 
 struct GCOptions

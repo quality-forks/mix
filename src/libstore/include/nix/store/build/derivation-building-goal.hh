@@ -59,6 +59,11 @@ private:
 
     std::unique_ptr<MaintainCount<uint64_t>> mcRunningBuilds;
 
+    /**
+     * Whether the derivation sets `__transient`, once its options are read.
+     */
+    bool transient = false;
+
     std::string key() override;
 
     struct LocalBuildCapability

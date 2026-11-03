@@ -51,5 +51,6 @@
     "rainbow",
     "uid-range"
   ],
+  "transient": false,
   "unsafeDiscardReferences": {}
 }

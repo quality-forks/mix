@@ -51,6 +51,9 @@ Worker::~Worker()
        their destructors). */
     topGoals.clear();
 
+    if (auto localStore = dynamic_cast<LocalStore *>(&store))
+        localStore->joinTransientEviction();
+
     for (auto & failure : deferredFailures)
         try {
             logError(failure);
@@ -309,8 +312,10 @@ void Worker::run(const Goals & _topGoals)
         checkInterrupt();
 
         // TODO GC interface?
-        if (auto localStore = dynamic_cast<LocalStore *>(&store))
+        if (auto localStore = dynamic_cast<LocalStore *>(&store)) {
             localStore->autoGC(false);
+            localStore->startTransientEviction();
+        }
 
         /* Call every wake goal (in the ordering established by
            CompareGoalPtrs). */

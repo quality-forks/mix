@@ -339,6 +339,7 @@ DerivationOptions<SingleDerivedPath> derivationOptionsFromStructuredAttrs(
             getStringSetAttr(env, parsed, "requiredSystemFeatures").value_or(defaults.requiredSystemFeatures),
         .preferLocalBuild = getBoolAttr(env, parsed, "preferLocalBuild", defaults.preferLocalBuild),
         .allowSubstitutes = getBoolAttr(env, parsed, "allowSubstitutes", defaults.allowSubstitutes),
+        .transient = getBoolAttr(env, parsed, "__transient", defaults.transient),
     };
 }
 
@@ -531,6 +532,7 @@ std::optional<Options<StorePath>> tryResolve(
         .requiredSystemFeatures = drvOptions.requiredSystemFeatures,
         .preferLocalBuild = drvOptions.preferLocalBuild,
         .allowSubstitutes = drvOptions.allowSubstitutes,
+        .transient = drvOptions.transient,
     };
 }
 
@@ -581,6 +583,7 @@ static nix::DerivationOptions<Inputs> derivationOptionsFromJson(const nlohmann::
         .requiredSystemFeatures = getStringSet(valueAt(json, "requiredSystemFeatures")),
         .preferLocalBuild = getBoolean(valueAt(json, "preferLocalBuild")),
         .allowSubstitutes = getBoolean(valueAt(json, "allowSubstitutes")),
+        .transient = getBoolean(valueAt(json, "transient")),
     };
 }
 
@@ -619,6 +622,7 @@ static void derivationOptionsToJson(nlohmann::json & json, const nix::Derivation
     json["requiredSystemFeatures"] = o.requiredSystemFeatures;
     json["preferLocalBuild"] = o.preferLocalBuild;
     json["allowSubstitutes"] = o.allowSubstitutes;
+    json["transient"] = o.transient;
 }
 
 template<typename Inputs>

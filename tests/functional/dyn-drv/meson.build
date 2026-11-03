@@ -15,6 +15,7 @@ suites += {
     'submit-reference.sh',
     'gc-built-drv.sh',
     'trace-without-drv.sh',
+    'transient-submitted.sh',
   ],
   'workdir' : meson.current_source_dir(),
 }

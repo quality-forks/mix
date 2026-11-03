@@ -43,6 +43,7 @@ void GCSettings::anchor() {}
 
 static std::string gcSocketPath = "gc-socket/socket";
 static std::string gcRootsDir = "gcroots";
+static std::string transientEvictedPath = "transient-evicted";
 
 void LocalStore::addIndirectRoot(const std::filesystem::path & path)
 {
@@ -374,6 +375,10 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
 
     bool shouldDelete = options.action == GCOptions::gcDeleteDead || options.action == GCOptions::gcDeleteSpecific;
 
+    /* Builds evict transient paths in the background, into the log of
+       whatever client the daemon serves. */
+    auto progressLevel = options.action == GCOptions::gcEvictTransient ? lvlTalkative : lvlInfo;
+
     boost::unordered_flat_set<StorePath, std::hash<StorePath>> roots, dead, alive;
 
     /* Return early if nothing to delete */
@@ -543,7 +548,7 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
 
     /* Find the roots.  Since we've grabbed the GC lock, the set of
        permanent roots cannot increase now. */
-    printInfo("finding garbage collector roots...");
+    printMsg(progressLevel, "finding garbage collector roots...");
     Roots rootMap;
     if (!options.ignoreLiveness)
         findRootsNoTemp(rootMap, true);
@@ -585,7 +590,7 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
             }
         }
 
-        printInfo("deleting '%1%'", path);
+        printMsg(progressLevel, "deleting '%1%'", path);
 
         results.paths.insert(path);
 
@@ -601,6 +606,67 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
     };
 
     boost::unordered_flat_map<StorePath, StorePathSet, std::hash<StorePath>> referrersCache;
+
+    boost::unordered_flat_set<StorePath, std::hash<StorePath>> transient;
+
+    /* Evicts transient paths nothing refers to, least recently used first,
+       until they fit `transient-store-size`, and transient derivations
+       unused for ten minutes whatever the size. Each round frees the paths
+       the last one's victims referred to. */
+    auto evictTransient = [&]() {
+        auto budget = gcSettings.transientStoreSize.get();
+        auto unusedSince = time(nullptr) - 10 * 60;
+
+        while (true) {
+            auto size = queryTransientSize();
+            StorePaths victims;
+            for (auto & candidate : queryEvictableTransient()) {
+                bool over = size > budget;
+                if (!over && !(candidate.path.isDerivation() && candidate.lastUsed < unusedSince))
+                    continue;
+                if (roots.contains(candidate.path))
+                    continue;
+                victims.push_back(candidate.path);
+                size -= std::min(size, candidate.narSize);
+            }
+
+            size_t evicted = 0;
+            for (size_t begin = 0; begin < victims.size(); begin += 1024) {
+                StorePaths batch;
+                {
+                    auto shared(_shared.lock());
+                    for (auto i = begin; i < std::min(begin + 1024, victims.size()); ++i) {
+                        auto hashPart = std::string(victims[i].hashPart());
+                        if (shared->tempRoots.contains(hashPart))
+                            continue;
+                        shared->deleting.insert(std::move(hashPart));
+                        batch.push_back(victims[i]);
+                    }
+                }
+                Finally resetDeleting([&]() {
+                    auto shared(_shared.lock());
+                    shared->deleting.clear();
+                    wakeup.notify_all();
+                });
+                auto inUse = invalidatePathsChecked(batch);
+                StorePathSet outputs;
+                for (auto & path : batch) {
+                    if (inUse.contains(path))
+                        continue;
+                    if (!path.isDerivation())
+                        outputs.insert(path);
+                    deleteFromStore(path.to_string(), true);
+                    ++evicted;
+                }
+                forgetBuildTracesOf(outputs);
+            }
+
+            if (evicted == 0)
+                break;
+        }
+
+        writeFile(config->stateDir.get() / transientEvictedPath, "");
+    };
 
     /* Helper function that visits all paths reachable from `start`
        via the referrers edges and optionally derivers and derivation
@@ -667,6 +733,13 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
                handle it again. */
             if (dead.contains(*path))
                 continue;
+
+            /* Eviction alone removes a transient path, which keeps every
+               path it refers to. */
+            if (transient.contains(*path)) {
+                alive.insert(start);
+                return;
+            }
 
             /* If this is a root, bail out. */
             if (roots.contains(*path)) {
@@ -803,6 +876,8 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
                     case GCOptions::gcDeleteSpecific:
                         printInfo("deleting specified paths...");
                         break;
+                    case GCOptions::gcEvictTransient:
+                        throw Error("Cannot evict transient paths among specified paths");
                     case GCOptions::gcReturnDead:
                     case GCOptions::gcReturnLive:
                         printInfo("determining live/dead paths...");
@@ -831,10 +906,18 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
                         break;
                     case GCOptions::gcDeleteSpecific:
                         throw Error("Cannot delete the entire store");
+                    case GCOptions::gcEvictTransient:
+                        evictTransient();
+                        return;
                     case GCOptions::gcReturnDead:
                     case GCOptions::gcReturnLive:
                         printInfo("determining live/dead paths...");
                     }
+
+                    if (options.action == GCOptions::gcDeleteDead)
+                        evictTransient();
+                    for (auto & path : queryTransientPaths())
+                        transient.insert(path);
 
                     AutoCloseDir dir(opendir(config->realStoreDir.get().string().c_str()));
                     if (!dir)
@@ -928,6 +1011,53 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
 
     /* While we're at it, vacuum the database. */
     // if (options.action == GCOptions::gcDeleteDead) vacuumDB();
+}
+
+void LocalStore::startTransientEviction()
+{
+    if (config->readOnly)
+        return;
+
+    const auto & gcSettings = config->getLocalSettings().getGCSettings();
+    auto state(_state->lock());
+    auto now = std::chrono::steady_clock::now();
+
+    if (state->evicting || now < state->lastEvictionCheck + std::chrono::seconds(gcSettings.minFreeCheckInterval))
+        return;
+
+    state->lastEvictionCheck = now;
+    if (state->evictionThread.joinable())
+        state->evictionThread.join();
+    state->evicting = true;
+
+    state->evictionThread = std::thread([this, &gcSettings]() {
+        Finally done([&]() { _state->lock()->evicting = false; });
+        try {
+            auto size = queryTransientSize();
+            if (size == 0)
+                return;
+
+            std::error_code ec;
+            auto evicted = std::filesystem::last_write_time(config->stateDir.get() / transientEvictedPath, ec);
+            bool due = ec || std::filesystem::file_time_type::clock::now() - evicted >= std::chrono::minutes(10);
+            if (size <= gcSettings.transientStoreSize && !due)
+                return;
+
+            GCOptions options;
+            options.action = GCOptions::gcEvictTransient;
+            GCResults results;
+            collectGarbage(options, results);
+        } catch (...) {
+            ignoreExceptionInDestructor();
+        }
+    });
+}
+
+void LocalStore::joinTransientEviction()
+{
+    auto evictionThread = std::move(_state->lock()->evictionThread);
+    if (evictionThread.joinable())
+        evictionThread.join();
 }
 
 void LocalStore::autoGC(bool sync)
