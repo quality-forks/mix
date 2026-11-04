@@ -38,13 +38,15 @@ struct ChrootLinuxDerivationBuilder : ChrootDerivationBuilder, LinuxDerivationBu
     std::optional<std::filesystem::path> cgroup;
 
     /**
-     * A tree of `__trees`, the overlay the builder moves to its manifest's
-     * path, and a shared lock on its metadata tree, which the tree cache
-     * evicts only once no build holds it. The overlay closes first.
+     * A tree of `__trees` or `__writableTrees`, the overlay the builder
+     * moves onto `target`, and a shared lock on its metadata tree,
+     * which the tree cache evicts only once no build holds it. The overlay
+     * closes first.
      */
     struct Tree
     {
         std::filesystem::path target;
+        bool writable;
         AutoCloseFD lock;
         AutoCloseFD mount;
     };
@@ -71,7 +73,7 @@ struct ChrootLinuxDerivationBuilder : ChrootDerivationBuilder, LinuxDerivationBu
 
     void prepareSandbox() override;
 
-    Tree mountTree(const StorePath & manifest);
+    Tree mountTree(const StorePath & manifest, const std::filesystem::path & target, bool writable);
 
     void startChild() override;
 

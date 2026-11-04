@@ -163,6 +163,16 @@ struct Options
     std::set<Input> trees;
 
     /**
+     * env: __writableTrees
+     *
+     * Manifests of trees, each mounted writable as the build user on the
+     * directory of the build's temporary directory it is keyed by, its
+     * changes kept outside the sandbox. A build that mounts a tree where it
+     * would have copied it records the same paths.
+     */
+    std::map<std::string, Input, std::less<>> writableTrees;
+
+    /**
      * env: __sandboxProfile
      *
      * Just for Darwin

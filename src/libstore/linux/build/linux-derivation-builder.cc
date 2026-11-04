@@ -84,6 +84,10 @@ static int move_mount(int sourceDirFd, const char * source, int destDirFd, const
 
 #endif
 
+#ifndef MOUNT_ATTR_IDMAP
+#  define MOUNT_ATTR_IDMAP 0x00100000
+#endif
+
 #if !HAVE_FSMOUNT
 
 #  define FSOPEN_CLOEXEC 0x00000001
@@ -493,6 +497,23 @@ enum HelperFd : Descriptor {
     treeFd = 7,
 };
 
+struct SandboxTree
+{
+    std::filesystem::path target;
+    bool writable;
+};
+
+/**
+ * The build user's ids outside the sandbox, which a writable tree shows its
+ * files as owned by.
+ */
+struct SandboxIds
+{
+    uid_t uid;
+    gid_t gid;
+    uid_t count;
+};
+
 struct SandboxBuiltin
 {
     nlohmann::json drv;
@@ -526,7 +547,8 @@ struct SandboxSpec
     /**
      * Where each tree is mounted, its overlay at `treeFd` plus its index.
      */
-    std::vector<std::filesystem::path> trees;
+    std::vector<SandboxTree> trees;
+    SandboxIds hostIds;
     bool allowNewPrivileges;
     bool filterSyscalls;
     std::string platform;
@@ -541,6 +563,10 @@ struct SandboxSpec
 
 nlohmann::json toJson(const SandboxSpec & spec)
 {
+    auto trees = nlohmann::json::array();
+    for (auto & tree : spec.trees)
+        trees.push_back({{"target", tree.target.native()}, {"writable", tree.writable}});
+
     auto pathsInChroot = nlohmann::json::array();
     for (auto & [target, path] : spec.pathsInChroot)
         pathsInChroot.push_back(
@@ -560,7 +586,8 @@ nlohmann::json toJson(const SandboxSpec & spec)
         {"mountSys", spec.mountSys},
         {"shmSize", spec.shmSize},
         {"lockEtc", spec.lockEtc},
-        {"trees", spec.trees},
+        {"trees", trees},
+        {"hostIds", {{"uid", spec.hostIds.uid}, {"gid", spec.hostIds.gid}, {"count", spec.hostIds.count}}},
         {"allowNewPrivileges", spec.allowNewPrivileges},
         {"filterSyscalls", spec.filterSyscalls},
         {"platform", spec.platform},
@@ -595,6 +622,10 @@ nlohmann::json toJson(const SandboxSpec & spec)
 
 SandboxSpec sandboxSpecFromJson(const nlohmann::json & json)
 {
+    std::vector<SandboxTree> trees;
+    for (auto & tree : json.at("trees"))
+        trees.push_back({.target = tree.at("target").get<std::string>(), .writable = tree.at("writable")});
+
     PathsInChroot pathsInChroot;
     for (auto & path : json.at("pathsInChroot"))
         pathsInChroot.emplace(
@@ -635,7 +666,12 @@ SandboxSpec sandboxSpecFromJson(const nlohmann::json & json)
         .mountSys = json.at("mountSys"),
         .shmSize = json.at("shmSize"),
         .lockEtc = json.at("lockEtc"),
-        .trees = json.at("trees"),
+        .trees = std::move(trees),
+        .hostIds{
+            .uid = json.at("hostIds").at("uid"),
+            .gid = json.at("hostIds").at("gid"),
+            .count = json.at("hostIds").at("count"),
+        },
         .allowNewPrivileges = json.at("allowNewPrivileges"),
         .filterSyscalls = json.at("filterSyscalls"),
         .platform = json.at("platform"),
@@ -725,8 +761,14 @@ void ChrootLinuxDerivationBuilder::prepareSandbox()
         // chownToBuilder(*cgroup / "cgroup.subtree_control");
     }
 
-    for (auto & manifest : drvOptions.trees)
-        trees.push_back(mountTree(manifest));
+    for (auto & manifest : drvOptions.trees) {
+        trees.push_back(mountTree(manifest, store->printStorePath(manifest), false));
+        createDirs(chrootRootDir / trees.back().target.relative_path());
+    }
+    for (auto & [dir, manifest] : drvOptions.writableTrees) {
+        trees.push_back(mountTree(manifest, tmpDirInSandbox() / dir, true));
+        createDirs(tmpDir / dir);
+    }
 }
 
 /**
@@ -768,7 +810,8 @@ buildTree(const std::filesystem::path & helper, const OsStrings & args, const st
     return chomp(printed);
 }
 
-ChrootLinuxDerivationBuilder::Tree ChrootLinuxDerivationBuilder::mountTree(const StorePath & manifest)
+ChrootLinuxDerivationBuilder::Tree
+ChrootLinuxDerivationBuilder::mountTree(const StorePath & manifest, const std::filesystem::path & target, bool writable)
 {
     auto & localSettings = store->getLocalSettings();
     auto & helper = localSettings.treeHelper.get();
@@ -804,7 +847,7 @@ ChrootLinuxDerivationBuilder::Tree ChrootLinuxDerivationBuilder::mountTree(const
 
     /* Eviction may remove a tree between the helper printing its path and
        the lock on it, after which the path names nothing. */
-    Tree tree{.target = store->printStorePath(manifest)};
+    Tree tree{.target = target, .writable = writable};
     try {
         std::filesystem::path written;
         for (int attempt = 0; !tree.lock; ++attempt) {
@@ -824,27 +867,35 @@ ChrootLinuxDerivationBuilder::Tree ChrootLinuxDerivationBuilder::mountTree(const
                 tree.lock.close();
         }
 
+        std::vector<std::pair<const char *, std::string>> options{
+            {"lowerdir+", written.native()},
+            {"datadir+", store->getRealStoreDir().native()},
+            {"metacopy", "on"},
+        };
+        if (writable) {
+            auto changes = topTmpDir / "trees" / std::to_string(trees.size());
+            createDirs(changes / "upper");
+            createDirs(changes / "work");
+            options.emplace_back("upperdir", (changes / "upper").native());
+            options.emplace_back("workdir", (changes / "work").native());
+        }
+
         AutoCloseFD fs = fsopen("overlay", FSOPEN_CLOEXEC);
         if (!fs)
             throw SysError("opening an overlay");
-        for (auto & [key, value] : std::initializer_list<std::pair<const char *, std::string>>{
-                 {"lowerdir+", written.native()},
-                 {"datadir+", store->getRealStoreDir().native()},
-                 {"metacopy", "on"},
-             })
+        for (auto & [key, value] : options)
             if (fsconfig(fs.get(), FSCONFIG_SET_STRING, key, value.c_str(), 0) == -1)
                 throw SysError("setting '%s' of the overlay", key);
         if (fsconfig(fs.get(), FSCONFIG_CMD_CREATE, nullptr, nullptr, 0) == -1)
             throw SysError("creating the overlay");
-        tree.mount = fsmount(fs.get(), FSMOUNT_CLOEXEC, MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV);
+        tree.mount = fsmount(
+            fs.get(), FSMOUNT_CLOEXEC, (writable ? 0 : MOUNT_ATTR_RDONLY) | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV);
         if (!tree.mount)
             throw SysError("mounting the overlay");
     } catch (Error & e) {
         e.addTrace({}, "while mounting the tree of '%s'", store->printStorePath(manifest));
         throw;
     }
-
-    createDirs(chrootRootDir / tree.target.relative_path());
     return tree;
 }
 
@@ -915,7 +966,13 @@ void ChrootLinuxDerivationBuilder::startChild()
         .mountSys = buildUser && buildUser->getUIDCount() != 1,
         .shmSize = localSettings.sandboxShmSize,
         .lockEtc = !drvOptions.useUidRange(drv),
-        .trees = trees | std::views::transform(&Tree::target) | std::ranges::to<std::vector>(),
+        .trees = trees | std::views::transform([](auto & tree) { return SandboxTree{tree.target, tree.writable}; })
+                 | std::ranges::to<std::vector>(),
+        .hostIds{
+            .uid = buildUser ? buildUser->getUID() : getuid(),
+            .gid = buildUser ? buildUser->getGID() : getgid(),
+            .count = buildUser ? buildUser->getUIDCount() : 1,
+        },
         .allowNewPrivileges = localSettings.allowNewPrivileges,
         .filterSyscalls = localSettings.filterSyscalls,
         .platform = drv.platform,
@@ -1225,14 +1282,15 @@ static void enterSandbox(SandboxSpec & spec)
         }
     }
 
-    for (auto [index, target] : std::views::enumerate(spec.trees)) {
-        AutoCloseFD tree = treeFd + Descriptor(index);
+    for (auto [index, tree] : std::views::enumerate(spec.trees)) {
+        AutoCloseFD mount = treeFd + Descriptor(index);
         AutoCloseFD mountPoint = ::openat(
-            chrootRootDirFd.get(), target.relative_path().c_str(), O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+            chrootRootDirFd.get(), tree.target.relative_path().c_str(), O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
         if (!mountPoint)
-            throw SysError("opening the mount point of the tree %s", PathFmt(target));
-        if (::move_mount(tree.get(), "", mountPoint.get(), "", MOVE_MOUNT_F_EMPTY_PATH | MOVE_MOUNT_T_EMPTY_PATH) == -1)
-            throw SysError("mounting the tree %s", PathFmt(target));
+            throw SysError("opening the mount point of the tree %s", PathFmt(tree.target));
+        if (::move_mount(mount.get(), "", mountPoint.get(), "", MOVE_MOUNT_F_EMPTY_PATH | MOVE_MOUNT_T_EMPTY_PATH)
+            == -1)
+            throw SysError("mounting the tree %s", PathFmt(tree.target));
     }
 
     /* Bind a new instance of procfs on /proc. */
@@ -1382,6 +1440,57 @@ static void enterSandbox(SandboxSpec & spec)
     }
 }
 
+/**
+ * Shows the files of each writable tree as owned by the build user, since
+ * the metadata trees are root's. Only the initial user namespace may change
+ * the overlay made there, so this runs before the clone.
+ */
+static void idmapWritableTrees(const SandboxSpec & spec)
+{
+    if (std::ranges::none_of(spec.trees, &SandboxTree::writable))
+        return;
+
+    Pipe entered, done;
+    entered.create();
+    done.create();
+    Pid child = startProcess([&] {
+        done.writeSide.close();
+        if (unshare(CLONE_NEWUSER) == -1)
+            _exit(1);
+        writeFull(entered.writeSide.get(), "1");
+        entered.writeSide.close();
+        char c;
+        while (::read(done.readSide.get(), &c, 1) == -1 && errno == EINTR)
+            ;
+        _exit(0);
+    });
+    entered.writeSide.close();
+    done.readSide.close();
+    if (drainFD(entered.readSide.get()) != "1")
+        throw Error("creating the user namespace of the writable trees");
+
+    auto proc = procPath / std::to_string(static_cast<pid_t>(child));
+    writeFile(proc / "uid_map", fmt("0 %d %d", spec.hostIds.uid, spec.hostIds.count));
+    writeFile(proc / "gid_map", fmt("0 %d %d", spec.hostIds.gid, spec.hostIds.count));
+    AutoCloseFD userNamespace = open((proc / "ns" / "user").c_str(), O_RDONLY | O_CLOEXEC);
+    if (!userNamespace)
+        throw SysError("opening the user namespace of the writable trees");
+    done.writeSide.close();
+    child.wait();
+
+    struct
+    {
+        uint64_t attrSet, attrClear, propagation, userNamespace;
+    } attributes{.attrSet = MOUNT_ATTR_IDMAP, .userNamespace = uint64_t(userNamespace.get())};
+
+    for (auto [index, tree] : std::views::enumerate(spec.trees))
+        if (tree.writable
+            && ::syscall(
+                   __NR_mount_setattr, treeFd + Descriptor(index), "", AT_EMPTY_PATH, &attributes, sizeof(attributes))
+                   == -1)
+            throw SysError("mapping the owner of the tree %s", PathFmt(tree.target));
+}
+
 void sandboxHelperMain()
 {
     logger = makeSimpleLogger().release();
@@ -1410,6 +1519,8 @@ void sandboxHelperMain()
                 throw Error(
                     "setgroups failed. Set the require-drop-supplementary-groups option to false to skip this step.");
         }
+
+        idmapWritableTrees(spec);
 
         ProcessOptions options;
         if (spec.cgroup)

@@ -119,8 +119,8 @@ DerivationBuilderUnique makeExternalDerivationBuilder(
     DerivationBuilderParams params,
     const ExternalBuilder & handler)
 {
-    if (!params.drvOptions.trees.empty())
-        throw Error("'__trees' is not supported by external builders");
+    if (!params.drvOptions.trees.empty() || !params.drvOptions.writableTrees.empty())
+        throw Error("'__trees' and '__writableTrees' are not supported by external builders");
     return DerivationBuilderUnique(new ExternalDerivationBuilder(store, miscMethods, std::move(params), handler));
 }
 

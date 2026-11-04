@@ -52,6 +52,20 @@ Derivations can declare some infrequently used optional attributes.
 
     It is an error to list a store path that is not an input of the derivation.
 
+  - [`__writableTrees`]{#adv-attr-writableTrees}\
+    Manifests like those of [`__trees`](#adv-attr-trees), each mounted writable on a directory of the build's temporary directory.
+    The tree's files appear owned by the build user, and the changes stay outside the sandbox, leaving the shared tree and the store untouched.
+    A build that would copy a tree to change it mounts it where the copy went, so the paths it records stay the same.
+
+    With [`__structuredAttrs`](#adv-attr-structuredAttrs) it is an attribute set from directory name to manifest, and otherwise a list of directory names each followed by its manifest:
+
+    ```nix
+    derivation {
+      ...
+      __writableTrees = [ "source" sources ];
+    };
+    ```
+
   - [`passAsFile`]{#adv-attr-passAsFile}\
     A list of names of attributes whose environment variables should be marked
     [*pass as file*](@docroot@/store/derivation/index.md#pass-as-file).

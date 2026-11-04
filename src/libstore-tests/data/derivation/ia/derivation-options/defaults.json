@@ -23,5 +23,6 @@
   "requiredSystemFeatures": [],
   "transient": false,
   "trees": [],
-  "unsafeDiscardReferences": {}
+  "unsafeDiscardReferences": {},
+  "writableTrees": {}
 }

@@ -336,6 +336,36 @@ DerivationOptions<SingleDerivedPath> derivationOptionsFromStructuredAttrs(
                     ret.insert(parseSingleDerivedPath(s));
                 return ret;
             }(),
+        .writableTrees =
+            [&] {
+                std::map<std::string, SingleDerivedPath, std::less<>> ret;
+                auto add = [&](std::string dir, const std::string & manifest) {
+                    static std::regex regex("[A-Za-z_][A-Za-z0-9_.-]*");
+                    if (!std::regex_match(dir, regex))
+                        throw Error("invalid directory name '%s' in '__writableTrees'", dir);
+                    ret.insert_or_assign(std::move(dir), parseSingleDerivedPath(manifest));
+                };
+
+                if (parsed) {
+                    auto * e = get(parsed->structuredAttrs, "__writableTrees");
+                    if (!e)
+                        return ret;
+                    if (!e->is_object())
+                        throw Error("'__writableTrees' in structured attrs is not a JSON object");
+                    for (auto & [dir, manifest] : getObject(*e))
+                        add(dir, getString(manifest));
+                } else {
+                    auto s = getOr(env, "__writableTrees", "");
+                    Strings ss = tokenizeString<Strings>(s);
+                    if (ss.size() % 2 != 0)
+                        throw Error("odd number of tokens in '__writableTrees': '%1%'", s);
+                    for (auto i = ss.begin(); i != ss.end();) {
+                        auto dir = std::move(*i++);
+                        add(std::move(dir), *i++);
+                    }
+                }
+                return ret;
+            }(),
         .additionalSandboxProfile =
             getStringAttr(env, parsed, "__sandboxProfile").value_or(defaults.additionalSandboxProfile),
         .noChroot = getBoolAttr(env, parsed, "__noChroot", defaults.noChroot),
@@ -532,6 +562,14 @@ std::optional<Options<StorePath>> tryResolve(
         resolvedTrees.insert(*resolvedPath);
     }
 
+    std::map<std::string, StorePath, std::less<>> resolvedWritableTrees;
+    for (const auto & [dir, input] : drvOptions.writableTrees) {
+        auto resolvedPath = tryResolvePath(input);
+        if (!resolvedPath)
+            return std::nullopt;
+        resolvedWritableTrees.emplace(dir, *resolvedPath);
+    }
+
     // Return resolved Options using designated initializers
     return Options<StorePath>{
         .outputChecks = *resolvedOutputChecks,
@@ -540,6 +578,7 @@ std::optional<Options<StorePath>> tryResolve(
         .exportReferencesGraph = *resolvedExportGraph,
         .hiddenInputs = std::move(resolvedHiddenInputs),
         .trees = std::move(resolvedTrees),
+        .writableTrees = std::move(resolvedWritableTrees),
         .additionalSandboxProfile = drvOptions.additionalSandboxProfile,
         .noChroot = drvOptions.noChroot,
         .impureHostDeps = drvOptions.impureHostDeps,
@@ -590,6 +629,7 @@ static nix::DerivationOptions<Inputs> derivationOptionsFromJson(const nlohmann::
         .exportReferencesGraph = valueAt(json, "exportReferencesGraph"),
         .hiddenInputs = valueAt(json, "hiddenInputs"),
         .trees = valueAt(json, "trees"),
+        .writableTrees = valueAt(json, "writableTrees"),
 
         .additionalSandboxProfile = getString(valueAt(json, "additionalSandboxProfile")),
         .noChroot = getBoolean(valueAt(json, "noChroot")),
@@ -630,6 +670,7 @@ static void derivationOptionsToJson(nlohmann::json & json, const nix::Derivation
     json["exportReferencesGraph"] = o.exportReferencesGraph;
     json["hiddenInputs"] = o.hiddenInputs;
     json["trees"] = o.trees;
+    json["writableTrees"] = o.writableTrees;
 
     json["additionalSandboxProfile"] = o.additionalSandboxProfile;
     json["noChroot"] = o.noChroot;

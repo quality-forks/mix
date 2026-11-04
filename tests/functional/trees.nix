@@ -43,6 +43,35 @@ in
   listed = read "listed";
   again = read "again";
 
+  writable = mkDerivation {
+    name = "writable";
+    __trees = [ manifest ];
+    __writableTrees = [
+      "source"
+      manifest
+    ];
+    buildCommand = ''
+      [[ $(stat -c %u $NIX_BUILD_TOP/source/a/b) == $(id -u) ]]
+      echo more >> $NIX_BUILD_TOP/source/a/b
+      [[ $(cat $NIX_BUILD_TOP/source/a/b) == hellomore ]]
+      [[ $(cat ${manifest}/a/b) == hello ]]
+      echo new > $NIX_BUILD_TOP/source/e
+      mkdir $NIX_BUILD_TOP/source/f
+      touch $out
+    '';
+  };
+
+  structured = mkDerivation {
+    name = "structured";
+    __structuredAttrs = true;
+    __writableTrees.source = manifest;
+    buildCommand = ''
+      echo more >> $NIX_BUILD_TOP/source/a/b
+      [[ $(cat $NIX_BUILD_TOP/source/a/b) == hellomore ]]
+      touch "''${outputs[out]}"
+    '';
+  };
+
   unreferenced = mkDerivation {
     name = "unreferenced";
     __trees = [

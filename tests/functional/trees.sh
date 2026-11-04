@@ -24,6 +24,11 @@ entries () {
     find "$trees" -mindepth 1 -maxdepth 1 -not -name '.*' | wc -l
 }
 
+# A writable tree takes the build user's changes, and the tree and store the
+# next build reads stay as they were.
+build -A writable
+build -A structured
+
 # A build reads the files its manifest lists, and the store path of none.
 build -A listed
 
