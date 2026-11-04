@@ -34,7 +34,7 @@ let
         [[ -f ${manifest}/c && ! -s ${manifest}/c ]]
         [[ -x ${manifest}/x && ! -x ${manifest}/a/b ]]
         [[ ! -e ${blob} ]]
-        ! touch ${manifest}/e
+        if touch ${manifest}/e; then exit 1; fi
         echo ${manifest} > $out
       '';
     };
