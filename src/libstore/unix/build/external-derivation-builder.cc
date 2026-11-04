@@ -60,10 +60,14 @@ struct ExternalDerivationBuilder : UnixDerivationBuilderImpl
         json.emplace("storeDir", store->storeDir);
         json.emplace("realStoreDir", store->getRealStoreDir().native());
         json.emplace("system", drv.platform);
+        StorePathSet trees = drvOptions.trees;
+        for (auto & [_, manifest] : drvOptions.writableTrees)
+            trees.insert(manifest);
         {
             auto l = nlohmann::json::array();
             for (auto & i : inputPaths)
-                l.push_back(store->printStorePath(i));
+                if (!trees.contains(i))
+                    l.push_back(store->printStorePath(i));
             json.emplace("inputPaths", std::move(l));
         }
         {
@@ -71,6 +75,30 @@ struct ExternalDerivationBuilder : UnixDerivationBuilderImpl
             for (auto & i : scratchOutputs)
                 l.emplace(i.first, store->printStorePath(i.second));
             json.emplace("outputs", std::move(l));
+        }
+        /* The builder writes each tree itself, from the manifest's
+           references listed in a file beside build.json. */
+        if (!trees.empty()) {
+            createDir(topTmpDir / "trees", 0755);
+            auto l = nlohmann::json::array();
+            auto add = [&](const StorePath & manifest, const std::filesystem::path & target, bool writable) {
+                auto references = topTmpDir / "trees" / std::to_string(l.size());
+                std::string listed;
+                for (auto & reference : store->queryReferences(manifest))
+                    listed += store->printStorePath(reference) + "\n";
+                writeFile(references, listed);
+                l.push_back({
+                    {"manifest", store->printStorePath(manifest)},
+                    {"target", target.native()},
+                    {"writable", writable},
+                    {"references", references.native()},
+                });
+            };
+            for (auto & manifest : drvOptions.trees)
+                add(manifest, store->printStorePath(manifest), false);
+            for (auto & [dir, manifest] : drvOptions.writableTrees)
+                add(manifest, tmpDirInSandbox() / dir, true);
+            json.emplace("trees", std::move(l));
         }
 
         // TODO(cole-h): writing this to stdin is too much effort right now, if we want to revisit
@@ -119,8 +147,6 @@ DerivationBuilderUnique makeExternalDerivationBuilder(
     DerivationBuilderParams params,
     const ExternalBuilder & handler)
 {
-    if (!params.drvOptions.trees.empty() || !params.drvOptions.writableTrees.empty())
-        throw Error("'__trees' and '__writableTrees' are not supported by external builders");
     return DerivationBuilderUnique(new ExternalDerivationBuilder(store, miscMethods, std::move(params), handler));
 }
 

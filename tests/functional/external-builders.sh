@@ -48,3 +48,44 @@ nix build -L --file "$expr" --out-link "$TEST_ROOT/result" \
   --external-builders "[{\"systems\": [\"x68_46-xunil\"], \"args\": [\"bla\"], \"program\": \"$external_builder\"}]"
 
 [[ $(cat "$TEST_ROOT/result") = foobar ]]
+
+trees_expr="$TEST_ROOT/trees.nix"
+cat > "$trees_expr" <<EOF
+with import ${config_nix};
+let
+  data = builtins.toFile "data" "hello";
+  manifest = builtins.toFile "listed.tree" (builtins.toJSON {
+    a.file = {
+      inherit data;
+      size = 5;
+    };
+  });
+in
+mkDerivation {
+  name = "external-trees";
+  system = "x68_46-xunil";
+  __writableTrees = [ "source" manifest ];
+  buildCommand = "";
+}
+EOF
+
+trees_builder="$TEST_ROOT/trees-builder.sh"
+{
+  echo "#! $SHELL -e"
+  echo "PATH=${PATH@Q}"
+  cat <<'EOF'
+manifest=$(jq -r '.trees[0].manifest' < "$1")
+[[ $manifest = */*-listed.tree ]]
+[[ $(jq -r '.trees[0].writable' < "$1") = true ]]
+[[ $(jq -r '.trees[0].target' < "$1") = /build/source ]]
+[[ $(jq --arg manifest "$manifest" '.inputPaths | index($manifest)' < "$1") = null ]]
+[[ $(cat "$(jq -r '.trees[0].references' < "$1")") = */*-data ]]
+printf "\2\n"
+printf foo > "$(jq -r .env.out < "$1")"
+EOF
+} > "$trees_builder"
+chmod +x "$trees_builder"
+
+nix build --file "$trees_expr" --no-link \
+  --extra-experimental-features external-builders \
+  --external-builders "[{\"systems\": [\"x68_46-xunil\"], \"args\": [], \"program\": \"$trees_builder\"}]"

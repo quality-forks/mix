@@ -763,6 +763,9 @@ public:
             "version": 1
           }
           ```
+
+          A derivation with [`__trees`](@docroot@/language/advanced-attributes.md#adv-attr-trees) or [`__writableTrees`](@docroot@/language/advanced-attributes.md#adv-attr-writableTrees) adds `trees`, one object per tree with `manifest`, `target`, the path in the sandbox the tree is mounted on, `writable`, and `references`, a file in *topTmpDir* listing the store paths the manifest refers to, one per line.
+          The manifests are left out of `inputPaths`, and the helper mounts each tree itself.
         )",
         {},   // aliases
         true, // document default

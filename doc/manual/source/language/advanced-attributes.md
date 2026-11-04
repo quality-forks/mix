@@ -41,7 +41,7 @@ Derivations can declare some infrequently used optional attributes.
     Like [`hiddenInputs`](#adv-attr-hiddenInputs), a manifest and its closure are realised but not otherwise made available, and the build's input closure stops at the manifest, since a valid manifest keeps its references valid.
 
     The program in [`tree-helper`](@docroot@/command-ref/conf-file.md#conf-tree-helper) reads the manifest and writes its tree's metadata to [`tree-cache-dir`](@docroot@/command-ref/conf-file.md#conf-tree-cache-dir), which an overlay mounts with the store as a data-only layer.
-    This needs a sandboxed build on Linux 6.8 or newer, with Nix running as root.
+    This needs a sandboxed build on Linux 6.8 or newer, with Nix running as root, or an [external builder](@docroot@/command-ref/conf-file.md#conf-external-builders) that mounts trees.
 
     ```nix
     derivation {
