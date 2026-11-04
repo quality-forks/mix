@@ -153,6 +153,16 @@ struct Options
     std::set<Input> hiddenInputs;
 
     /**
+     * env: __trees
+     *
+     * Manifests of trees, each mounted read-only at its own store path
+     * inside the sandbox, where only the files it lists are reachable.
+     * Like hidden inputs, a manifest and its closure are not otherwise
+     * made available inside the sandbox.
+     */
+    std::set<Input> trees;
+
+    /**
      * env: __sandboxProfile
      *
      * Just for Darwin

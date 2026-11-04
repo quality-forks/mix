@@ -329,6 +329,13 @@ DerivationOptions<SingleDerivedPath> derivationOptionsFromStructuredAttrs(
                     ret.insert(parseSingleDerivedPath(s));
                 return ret;
             }(),
+        .trees =
+            [&] {
+                std::set<SingleDerivedPath> ret;
+                for (auto & s : getStringSetAttr(env, parsed, "__trees").value_or(StringSet{}))
+                    ret.insert(parseSingleDerivedPath(s));
+                return ret;
+            }(),
         .additionalSandboxProfile =
             getStringAttr(env, parsed, "__sandboxProfile").value_or(defaults.additionalSandboxProfile),
         .noChroot = getBoolAttr(env, parsed, "__noChroot", defaults.noChroot),
@@ -517,6 +524,14 @@ std::optional<Options<StorePath>> tryResolve(
         resolvedHiddenInputs.insert(*resolvedPath);
     }
 
+    std::set<StorePath> resolvedTrees;
+    for (const auto & input : drvOptions.trees) {
+        auto resolvedPath = tryResolvePath(input);
+        if (!resolvedPath)
+            return std::nullopt;
+        resolvedTrees.insert(*resolvedPath);
+    }
+
     // Return resolved Options using designated initializers
     return Options<StorePath>{
         .outputChecks = *resolvedOutputChecks,
@@ -524,6 +539,7 @@ std::optional<Options<StorePath>> tryResolve(
         .passAsFile = drvOptions.passAsFile,
         .exportReferencesGraph = *resolvedExportGraph,
         .hiddenInputs = std::move(resolvedHiddenInputs),
+        .trees = std::move(resolvedTrees),
         .additionalSandboxProfile = drvOptions.additionalSandboxProfile,
         .noChroot = drvOptions.noChroot,
         .impureHostDeps = drvOptions.impureHostDeps,
@@ -573,6 +589,7 @@ static nix::DerivationOptions<Inputs> derivationOptionsFromJson(const nlohmann::
         .passAsFile = getStringSet(valueAt(json, "passAsFile")),
         .exportReferencesGraph = valueAt(json, "exportReferencesGraph"),
         .hiddenInputs = valueAt(json, "hiddenInputs"),
+        .trees = valueAt(json, "trees"),
 
         .additionalSandboxProfile = getString(valueAt(json, "additionalSandboxProfile")),
         .noChroot = getBoolean(valueAt(json, "noChroot")),
@@ -612,6 +629,7 @@ static void derivationOptionsToJson(nlohmann::json & json, const nix::Derivation
     json["passAsFile"] = o.passAsFile;
     json["exportReferencesGraph"] = o.exportReferencesGraph;
     json["hiddenInputs"] = o.hiddenInputs;
+    json["trees"] = o.trees;
 
     json["additionalSandboxProfile"] = o.additionalSandboxProfile;
     json["noChroot"] = o.noChroot;

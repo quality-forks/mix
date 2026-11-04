@@ -35,6 +35,23 @@ Derivations can declare some infrequently used optional attributes.
 
     It is an error to list a store path that is not an input of the derivation.
 
+  - [`__trees`]{#adv-attr-trees}\
+    A list of manifests, store paths that are inputs of the derivation, each mounted read-only inside the [sandbox](@docroot@/command-ref/conf-file.md#conf-sandbox) at its own store path.
+    The mount holds the paths the manifest lists, each file with the bytes of a store path the manifest refers to, and reaches no other store path.
+    Like [`hiddenInputs`](#adv-attr-hiddenInputs), a manifest and its closure are realised but not otherwise made available, and the build's input closure stops at the manifest, since a valid manifest keeps its references valid.
+
+    The program in [`tree-helper`](@docroot@/command-ref/conf-file.md#conf-tree-helper) reads the manifest and writes its tree's metadata to [`tree-cache-dir`](@docroot@/command-ref/conf-file.md#conf-tree-cache-dir), which an overlay mounts with the store as a data-only layer.
+    This needs a sandboxed build on Linux 6.8 or newer, with Nix running as root.
+
+    ```nix
+    derivation {
+      ...
+      __trees = [ sources ];
+    };
+    ```
+
+    It is an error to list a store path that is not an input of the derivation.
+
   - [`passAsFile`]{#adv-attr-passAsFile}\
     A list of names of attributes whose environment variables should be marked
     [*pass as file*](@docroot@/store/derivation/index.md#pass-as-file).

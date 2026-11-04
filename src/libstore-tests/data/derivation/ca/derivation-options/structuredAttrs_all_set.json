@@ -87,5 +87,6 @@
     "uid-range"
   ],
   "transient": false,
+  "trees": [],
   "unsafeDiscardReferences": {}
 }

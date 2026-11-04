@@ -1139,6 +1139,13 @@ std::unique_ptr<DerivationBuilder, DerivationBuilderDeleter> makeDerivationBuild
     if (!useSandbox && params.drvOptions.useUidRange(params.drv))
         throw Error("feature 'uid-range' is only supported in sandboxed builds");
 
+#ifdef __linux__
+    if (!useSandbox && !params.drvOptions.trees.empty())
+#else
+    if (!params.drvOptions.trees.empty())
+#endif
+        throw Error("'__trees' is only supported in sandboxed builds on Linux");
+
 #ifdef __APPLE__
     return DerivationBuilderUnique(new DarwinDerivationBuilder(store, miscMethods, std::move(params), useSandbox));
 #elif defined(__linux__)

@@ -187,6 +187,7 @@ suites = [
       'test-infra.sh',
       'timeout.sh',
       'toString-path.sh',
+      'trees.sh',
       'user-envs-migration.sh',
       'user-envs.sh',
       'why-depends.sh',

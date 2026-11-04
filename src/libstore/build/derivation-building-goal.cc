@@ -373,24 +373,37 @@ Goal::Co<DerivationBuildingGoal::Result> DerivationBuildingGoal::tryToBuild()
     /* Gather information necessary for computing the closure and/or
        running the build hook. */
 
+    auto drvOptions = [&] {
+        try {
+            return derivationOptionsFromStructuredAttrs(worker.store, drv->env, get(drv->structuredAttrs));
+        } catch (Error & e) {
+            e.addTrace({}, "while parsing derivation '%s'", worker.store.printStorePath(drvPath));
+            throw;
+        }
+    }();
+
     /* Determine the full set of input paths. */
 
-    /* Each path in the closure is a database lookup, which would hold up every other goal. */
+    /* Each path in the closure is a database lookup, which would hold up
+       every other goal. A tree manifest refers to every file of its tree,
+       which a valid manifest keeps valid, so the closure stops at it. */
     StorePathSet inputPaths;
     {
         std::jthread closing;
         inputPaths = co_await AsyncCallback<StorePathSet>{[&](Callback<StorePathSet> callback) {
-            closing = std::jthread(
-                [callback = std::move(callback), &store = worker.store, &inputs = drv->inputs]() mutable {
-                    try {
-                        ReceiveInterrupts receiveInterrupts;
-                        StorePathSet closure;
-                        store.computeFSClosure(inputs, closure);
-                        callback(std::move(closure));
-                    } catch (...) {
-                        callback.rethrow();
-                    }
-                });
+            closing = std::jthread([callback = std::move(callback),
+                                    &store = worker.store,
+                                    &inputs = drv->inputs,
+                                    &trees = drvOptions.trees]() mutable {
+                try {
+                    ReceiveInterrupts receiveInterrupts;
+                    StorePathSet closure;
+                    store.computeFSClosureWithLeaves(inputs, closure, trees);
+                    callback(std::move(closure));
+                } catch (...) {
+                    callback.rethrow();
+                }
+            });
         }};
     }
 
@@ -403,14 +416,6 @@ Goal::Co<DerivationBuildingGoal::Result> DerivationBuildingGoal::tryToBuild()
        build hook. */
     co_await yield();
 
-    auto drvOptions = [&] {
-        try {
-            return derivationOptionsFromStructuredAttrs(worker.store, drv->env, get(drv->structuredAttrs));
-        } catch (Error & e) {
-            e.addTrace({}, "while parsing derivation '%s'", worker.store.printStorePath(drvPath));
-            throw;
-        }
-    }();
     transient = drvOptions.transient;
 
     if (auto * localStore = dynamic_cast<LocalStore *>(&worker.store))
@@ -1026,7 +1031,16 @@ Goal::Co<DerivationBuildingGoal::LocalBuildOutcome> DerivationBuildingGoal::buil
                 defaultPathsInChroot.insert_or_assign(p, ChrootPath{.source = p});
             }
 
-            StorePathSet hiddenInputPaths;
+            for (auto & i : drvOptions.trees)
+                if (!drv->inputs.contains(i)) {
+                    outputLocks.unlock();
+                    co_return BuildError(
+                        BuildResult::Failure::InputRejected,
+                        "tree '%s' is not an input of '%s'",
+                        worker.store.printStorePath(i),
+                        worker.store.printStorePath(drvPath));
+                }
+            StorePathSet hiddenInputPaths = drvOptions.trees;
             if (!drvOptions.hiddenInputs.empty()) {
                 for (auto & i : drvOptions.hiddenInputs)
                     if (!drv->inputs.contains(i)) {
@@ -1041,13 +1055,13 @@ Goal::Co<DerivationBuildingGoal::LocalBuildOutcome> DerivationBuildingGoal::buil
                    `inputs`, so the hidden closure is subtracted from
                    the roots rather than just the hidden inputs. */
                 StorePathSet hiddenClosure;
-                worker.store.computeFSClosure(drvOptions.hiddenInputs, hiddenClosure);
+                worker.store.computeFSClosureWithLeaves(drvOptions.hiddenInputs, hiddenClosure, drvOptions.trees);
                 StorePathSet visibleInputs;
                 for (auto & i : drv->inputs)
                     if (!hiddenClosure.contains(i))
                         visibleInputs.insert(i);
                 StorePathSet visiblePaths;
-                worker.store.computeFSClosure(visibleInputs, visiblePaths);
+                worker.store.computeFSClosureWithLeaves(visibleInputs, visiblePaths, drvOptions.trees);
                 for (auto & i : hiddenClosure)
                     if (!visiblePaths.contains(i))
                         hiddenInputPaths.insert(i);

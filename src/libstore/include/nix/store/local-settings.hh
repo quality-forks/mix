@@ -482,6 +482,47 @@ public:
         )"};
 #endif
 
+#ifdef __linux__
+    Setting<std::optional<AbsolutePath>> treeHelper{
+        this,
+        std::nullopt,
+        "tree-helper",
+        R"(
+            *Linux only*
+
+            The program writing the metadata trees of the manifests a
+            derivation lists in [`__trees`](@docroot@/language/advanced-attributes.md#adv-attr-trees),
+            run as `tree-helper tree build` and `tree-helper tree evict`.
+            Without it such a derivation fails to build.
+        )"};
+
+    Setting<AbsolutePath> treeCacheDir{
+        this,
+        "/run/nix/trees",
+        "tree-cache-dir",
+        R"(
+            *Linux only*
+
+            Where [`tree-helper`](#conf-tree-helper) keeps the metadata trees
+            it writes, which belongs on a tmpfs, since a tree holds an empty
+            file for every path of its manifest.
+        )"};
+
+    Setting<uint64_t> treeCacheSize{
+        this,
+        4ULL * 1024 * 1024 * 1024,
+        "tree-cache-size",
+        R"(
+            *Linux only*
+
+            How many bytes of kernel memory the trees in
+            [`tree-cache-dir`](#conf-tree-cache-dir) may take, about 1.1 KiB
+            for each path. Writing a tree evicts the least recently used ones
+            no build mounts until they fit, and the garbage collector evicts
+            the trees of the manifests it deletes.
+        )"};
+#endif
+
     Setting<std::optional<AbsolutePath>> buildDir{
         this,
         std::nullopt,

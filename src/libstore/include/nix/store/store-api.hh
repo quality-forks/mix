@@ -947,6 +947,12 @@ public:
         bool includeDerivers = false);
 
     /**
+     * Like `computeFSClosure`, but the paths in `leaves` are added to
+     * `out` without their references.
+     */
+    void computeFSClosureWithLeaves(const StorePathSet & paths, StorePathSet & out, const StorePathSet & leaves);
+
+    /**
      * Given a set of paths that are to be built, return the set of
      * derivations that will be built, and the set of output paths that
      * will be substituted.

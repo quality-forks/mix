@@ -797,6 +797,11 @@ struct LocalBuildingStore : BuildingStore
         return localStore.config->getLocalSettings();
     }
 
+    StorePathSet queryReferences(const StorePath & path) override
+    {
+        return localStore.queryPathInfo(path)->references;
+    }
+
     ref<Store> makeRecursiveNixStore(RestrictionContext & ctx) override
     {
         return makeRestrictedStore(

@@ -119,6 +119,8 @@ DerivationBuilderUnique makeExternalDerivationBuilder(
     DerivationBuilderParams params,
     const ExternalBuilder & handler)
 {
+    if (!params.drvOptions.trees.empty())
+        throw Error("'__trees' is not supported by external builders");
     return DerivationBuilderUnique(new ExternalDerivationBuilder(store, miscMethods, std::move(params), handler));
 }
 

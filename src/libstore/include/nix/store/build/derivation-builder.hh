@@ -352,6 +352,8 @@ struct BuildingStore : StoreDirConfig
 
     virtual const LocalSettings & getLocalSettings() const = 0;
 
+    virtual StorePathSet queryReferences(const StorePath & path) = 0;
+
     /**
      * Make the store that recursive-Nix daemon connections talk to.
      */

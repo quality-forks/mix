@@ -22,6 +22,7 @@
 #include "sandbox-helper.hh"
 
 #include <algorithm>
+#include <ranges>
 #include <string_view>
 #include <cstdint>
 #include <atomic>
@@ -38,6 +39,7 @@
 #include <sys/syscall.h>
 #include <sys/prctl.h>
 #include <sys/resource.h>
+#include <sys/file.h>
 #include <grp.h>
 
 #if HAVE_SECCOMP
@@ -78,6 +80,36 @@ static int open_tree(int dirfd, const char * filename, unsigned int flags)
 static int move_mount(int sourceDirFd, const char * source, int destDirFd, const char * dest, unsigned int flags)
 {
     return ::syscall(__NR_move_mount, sourceDirFd, source, destDirFd, dest, flags);
+}
+
+#endif
+
+#if !HAVE_FSMOUNT
+
+#  define FSOPEN_CLOEXEC 0x00000001
+#  define FSCONFIG_SET_STRING 1
+#  define FSCONFIG_CMD_CREATE 6
+#  define FSMOUNT_CLOEXEC 0x00000001
+
+#  ifndef MOUNT_ATTR_RDONLY
+#    define MOUNT_ATTR_RDONLY 0x00000001
+#    define MOUNT_ATTR_NOSUID 0x00000002
+#    define MOUNT_ATTR_NODEV 0x00000004
+#  endif
+
+static int fsopen(const char * fsName, unsigned int flags)
+{
+    return ::syscall(__NR_fsopen, fsName, flags);
+}
+
+static int fsconfig(int fd, unsigned int cmd, const char * key, const void * value, int aux)
+{
+    return ::syscall(__NR_fsconfig, fd, cmd, key, value, aux);
+}
+
+static int fsmount(int fd, unsigned int flags, unsigned int attrFlags)
+{
+    return ::syscall(__NR_fsmount, fd, flags, attrFlags);
 }
 
 #endif
@@ -455,6 +487,10 @@ enum HelperFd : Descriptor {
     userNamespaceFd = 4,
     sendPidFd = 5,
     cgroupDirFd = 6,
+    /**
+     * The overlay of the first tree, followed by those of the others.
+     */
+    treeFd = 7,
 };
 
 struct SandboxBuiltin
@@ -487,6 +523,10 @@ struct SandboxSpec
     bool mountSys;
     std::string shmSize;
     bool lockEtc;
+    /**
+     * Where each tree is mounted, its overlay at `treeFd` plus its index.
+     */
+    std::vector<std::filesystem::path> trees;
     bool allowNewPrivileges;
     bool filterSyscalls;
     std::string platform;
@@ -520,6 +560,7 @@ nlohmann::json toJson(const SandboxSpec & spec)
         {"mountSys", spec.mountSys},
         {"shmSize", spec.shmSize},
         {"lockEtc", spec.lockEtc},
+        {"trees", spec.trees},
         {"allowNewPrivileges", spec.allowNewPrivileges},
         {"filterSyscalls", spec.filterSyscalls},
         {"platform", spec.platform},
@@ -594,6 +635,7 @@ SandboxSpec sandboxSpecFromJson(const nlohmann::json & json)
         .mountSys = json.at("mountSys"),
         .shmSize = json.at("shmSize"),
         .lockEtc = json.at("lockEtc"),
+        .trees = json.at("trees"),
         .allowNewPrivileges = json.at("allowNewPrivileges"),
         .filterSyscalls = json.at("filterSyscalls"),
         .platform = json.at("platform"),
@@ -682,6 +724,128 @@ void ChrootLinuxDerivationBuilder::prepareSandbox()
         chownToBuilder(*cgroup / "cgroup.threads");
         // chownToBuilder(*cgroup / "cgroup.subtree_control");
     }
+
+    for (auto & manifest : drvOptions.trees)
+        trees.push_back(mountTree(manifest));
+}
+
+/**
+ * Runs `tree-helper tree build`, the path of the tree it prints, or nothing
+ * if it needs the manifest's references to write a tree it does not hold.
+ */
+static std::optional<std::filesystem::path>
+buildTree(const std::filesystem::path & helper, const OsStrings & args, const std::optional<std::string> & references)
+{
+    AutoCloseFD input = memfd_create("nix-tree-references", MFD_CLOEXEC);
+    AutoCloseFD errors = memfd_create("nix-tree-errors", MFD_CLOEXEC);
+    if (!input || !errors)
+        throw SysError("creating the input of the tree helper");
+    if (references) {
+        writeFull(input.get(), *references);
+        if (lseek(input.get(), 0, SEEK_SET) == -1)
+            throw SysError("rewinding the input of the tree helper");
+    }
+
+    Pipe output;
+    output.create();
+    std::array fds{
+        FdRedirection{input.get(), FdRedirection::stdInput},
+        FdRedirection{output.writeSide.get(), FdRedirection::stdOut},
+        FdRedirection{errors.get(), FdRedirection::stdError},
+    };
+    auto pid = spawnProgram({.program = helper, .lookupPath = false, .args = args}, fds);
+    output.writeSide.close();
+    auto printed = drainFD(output.readSide.get());
+    auto status = pid.wait();
+
+    if (!references && WIFEXITED(status) && WEXITSTATUS(status) == 2)
+        return std::nullopt;
+    if (!statusOk(status)) {
+        if (lseek(errors.get(), 0, SEEK_SET) == -1)
+            throw SysError("rewinding the errors of the tree helper");
+        throw Error("%s %s: %s", PathFmt(helper), statusToString(status), chomp(drainFD(errors.get())));
+    }
+    return chomp(printed);
+}
+
+ChrootLinuxDerivationBuilder::Tree ChrootLinuxDerivationBuilder::mountTree(const StorePath & manifest)
+{
+    auto & localSettings = store->getLocalSettings();
+    auto & helper = localSettings.treeHelper.get();
+    if (!helper)
+        throw Error("'%s' mounts trees, but 'tree-helper' is not set", store->printStorePath(drvPath));
+    if (getuid() != 0)
+        throw Error("'%s' mounts trees, which only Nix running as root can", store->printStorePath(drvPath));
+
+    OsStrings args{
+        "tree",
+        "build",
+        "--cache",
+        localSettings.treeCacheDir.get().native(),
+        "--store-dir",
+        store->storeDir,
+        "--size",
+        std::to_string(localSettings.treeCacheSize.get()),
+        store->toRealPath(manifest).native(),
+    };
+
+    /* Only a tree the cache lacks needs the manifest's references, which
+       for a source tree are a store path for every file. */
+    std::optional<std::string> references;
+    auto build = [&] {
+        if (auto built = buildTree(*helper, args, references))
+            return *built;
+        references.emplace();
+        for (auto & reference : store->queryReferences(manifest))
+            *references += store->printStorePath(reference) + "\n";
+        args.insert(std::prev(args.end()), "--references");
+        return buildTree(*helper, args, references).value();
+    };
+
+    /* Eviction may remove a tree between the helper printing its path and
+       the lock on it, after which the path names nothing. */
+    Tree tree{.target = store->printStorePath(manifest)};
+    try {
+        std::filesystem::path written;
+        for (int attempt = 0; !tree.lock; ++attempt) {
+            if (attempt == 3)
+                throw Error("the tree was evicted while it was being mounted");
+            written = build();
+            tree.lock = open(written.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+            if (!tree.lock) {
+                if (errno != ENOENT)
+                    throw SysError("opening the tree %s", PathFmt(written));
+                continue;
+            }
+            if (flock(tree.lock.get(), LOCK_SH) == -1)
+                throw SysError("locking the tree %s", PathFmt(written));
+            struct stat st;
+            if (stat(written.c_str(), &st) == -1 || st.st_ino != nix::fstat(tree.lock.get()).st_ino)
+                tree.lock.close();
+        }
+
+        AutoCloseFD fs = fsopen("overlay", FSOPEN_CLOEXEC);
+        if (!fs)
+            throw SysError("opening an overlay");
+        for (auto & [key, value] : std::initializer_list<std::pair<const char *, std::string>>{
+                 {"lowerdir+", written.native()},
+                 {"datadir+", store->getRealStoreDir().native()},
+                 {"metacopy", "on"},
+             })
+            if (fsconfig(fs.get(), FSCONFIG_SET_STRING, key, value.c_str(), 0) == -1)
+                throw SysError("setting '%s' of the overlay", key);
+        if (fsconfig(fs.get(), FSCONFIG_CMD_CREATE, nullptr, nullptr, 0) == -1)
+            throw SysError("creating the overlay");
+        tree.mount = fsmount(fs.get(), FSMOUNT_CLOEXEC, MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV);
+        if (!tree.mount)
+            throw SysError("mounting the overlay");
+    } catch (Error & e) {
+        e.addTrace({}, "while mounting the tree of '%s'", store->printStorePath(manifest));
+        throw;
+    }
+
+    createDirs(chrootRootDir / tree.target.relative_path());
+    return tree;
 }
 
 void ChrootLinuxDerivationBuilder::startChild()
@@ -751,6 +915,7 @@ void ChrootLinuxDerivationBuilder::startChild()
         .mountSys = buildUser && buildUser->getUIDCount() != 1,
         .shmSize = localSettings.sandboxShmSize,
         .lockEtc = !drvOptions.useUidRange(drv),
+        .trees = trees | std::views::transform(&Tree::target) | std::ranges::to<std::vector>(),
         .allowNewPrivileges = localSettings.allowNewPrivileges,
         .filterSyscalls = localSettings.filterSyscalls,
         .platform = drv.platform,
@@ -803,6 +968,8 @@ void ChrootLinuxDerivationBuilder::startChild()
     };
     if (cgroupFd)
         fds.push_back({cgroupFd.get(), cgroupDirFd});
+    for (auto [index, tree] : std::views::enumerate(trees))
+        fds.push_back({tree.mount.get(), treeFd + Descriptor(index)});
 
     helper = spawnProgram(
         {
@@ -1058,6 +1225,16 @@ static void enterSandbox(SandboxSpec & spec)
         }
     }
 
+    for (auto [index, target] : std::views::enumerate(spec.trees)) {
+        AutoCloseFD tree = treeFd + Descriptor(index);
+        AutoCloseFD mountPoint = ::openat(
+            chrootRootDirFd.get(), target.relative_path().c_str(), O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        if (!mountPoint)
+            throw SysError("opening the mount point of the tree %s", PathFmt(target));
+        if (::move_mount(tree.get(), "", mountPoint.get(), "", MOVE_MOUNT_F_EMPTY_PATH | MOVE_MOUNT_T_EMPTY_PATH) == -1)
+            throw SysError("mounting the tree %s", PathFmt(target));
+    }
+
     /* Bind a new instance of procfs on /proc. */
     createDirs(chrootRootDir / "proc");
     if (mount("none", (chrootRootDir / "proc").c_str(), "proc", 0, 0) == -1)
@@ -1257,12 +1434,14 @@ BuilderExit ChrootLinuxDerivationBuilder::unprepareBuild()
 {
     /* Closing the last reference to the sandbox's mount namespace unmounts every bind mount in it
        before close() returns, a cost per input path that would otherwise stall every other goal. */
-    if (sandboxMountNamespace || sandboxUserNamespace)
+    if (sandboxMountNamespace || sandboxUserNamespace || !trees.empty())
         std::thread([mountNamespace = std::move(sandboxMountNamespace),
-                     userNamespace = std::move(sandboxUserNamespace)]() mutable {
+                     userNamespace = std::move(sandboxUserNamespace),
+                     trees = std::move(trees)]() mutable {
             try {
                 mountNamespace.close();
                 userNamespace.close();
+                trees.clear();
             } catch (...) {
                 ignoreExceptionInDestructor();
             }

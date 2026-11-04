@@ -11,6 +11,7 @@
 #include "nix/util/serialise.hh"
 #include "nix/util/util.hh"
 #include "nix/util/file-system.hh"
+#include "nix/util/processes.hh"
 #include "nix/store/posix-fs-canonicalise.hh"
 
 #include "store-config-private.hh"
@@ -1015,6 +1016,25 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
 
         printInfo("note: hard linking is currently saving %s", renderSize(unsharedSize - actualSize - overhead));
     }
+
+#ifdef __linux__
+    if ((shouldDelete || evicting) && !results.paths.empty())
+        if (auto & helper = config->getLocalSettings().treeHelper.get())
+            try {
+                runProgram(
+                    *helper,
+                    false,
+                    {"tree",
+                     "evict",
+                     "--cache",
+                     config->getLocalSettings().treeCacheDir.get().native(),
+                     "--size",
+                     std::to_string(config->getLocalSettings().treeCacheSize.get()),
+                     config->realStoreDir.get().native()});
+            } catch (Error & e) {
+                warn("evicting the trees of deleted manifests: %s", e.msg());
+            }
+#endif
 
     /* While we're at it, vacuum the database. */
     // if (options.action == GCOptions::gcDeleteDead) vacuumDB();

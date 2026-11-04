@@ -37,6 +37,20 @@ struct ChrootLinuxDerivationBuilder : ChrootDerivationBuilder, LinuxDerivationBu
      */
     std::optional<std::filesystem::path> cgroup;
 
+    /**
+     * A tree of `__trees`, the overlay the builder moves to its manifest's
+     * path, and a shared lock on its metadata tree, which the tree cache
+     * evicts only once no build holds it. The overlay closes first.
+     */
+    struct Tree
+    {
+        std::filesystem::path target;
+        AutoCloseFD lock;
+        AutoCloseFD mount;
+    };
+
+    std::vector<Tree> trees;
+
     ChrootLinuxDerivationBuilder(
         std::shared_ptr<BuildingStore> store,
         std::shared_ptr<DerivationBuilderCallbacks> miscMethods,
@@ -56,6 +70,8 @@ struct ChrootLinuxDerivationBuilder : ChrootDerivationBuilder, LinuxDerivationBu
     void prepareUser() override;
 
     void prepareSandbox() override;
+
+    Tree mountTree(const StorePath & manifest);
 
     void startChild() override;
 

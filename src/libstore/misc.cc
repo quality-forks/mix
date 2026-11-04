@@ -76,6 +76,25 @@ void Store::computeFSClosure(
     computeFSClosure(paths, paths_, flipDirection, includeOutputs, includeDerivers);
 }
 
+void Store::computeFSClosureWithLeaves(
+    const StorePathSet & startPaths, StorePathSet & paths_, const StorePathSet & leaves)
+{
+    computeClosure<StorePath>(
+        startPaths,
+        paths_,
+        GetEdgesAsync<StorePath>([this, &leaves](const StorePath & path) -> asio::awaitable<StorePathSet> {
+            StorePathSet res;
+            if (leaves.contains(path))
+                co_return res;
+            auto info = co_await callbackToAwaitable<ref<const ValidPathInfo>>(
+                [this, path](Callback<ref<const ValidPathInfo>> cb) { queryPathInfo(path, std::move(cb)); });
+            for (auto & ref : info->references)
+                if (ref != path)
+                    res.insert(ref);
+            co_return res;
+        }));
+}
+
 const ContentAddress * getDerivationCA(const Derivation & drv)
 {
     auto out = drv.outputs.find("out");

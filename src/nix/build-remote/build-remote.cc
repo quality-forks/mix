@@ -319,7 +319,18 @@ static int main_build_remote(int argc, char ** argv)
 
         {
             Activity act(*logger, lvlTalkative, actUnknown, fmt("copying dependencies to '%s'", storeUri));
-            copyPaths(*store, *sshStore, inputs, NoRepair, NoCheckSigs, substitute);
+            /* The inputs stop at tree manifests, whose closures a store
+               holding the manifest holds too, so only the closures of the
+               inputs the remote lacks are copied. */
+            sshStore->addTempRoots(inputs);
+            auto valid = sshStore->queryValidPaths(inputs, substitute);
+            StorePathSet missing;
+            for (auto & i : inputs)
+                if (!valid.contains(i))
+                    missing.insert(i);
+            StorePathSet closure;
+            store->computeFSClosure(missing, closure);
+            copyPaths(*store, *sshStore, closure, NoRepair, NoCheckSigs, substitute);
         }
 
         uploadLock = -1;

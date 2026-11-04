@@ -73,6 +73,7 @@ check_funcs = [
   'statvfs',
   'open_tree',
   'move_mount',
+  'fsmount',
 ]
 foreach funcspec : check_funcs
   define_name = 'HAVE_' + funcspec.underscorify().to_upper()

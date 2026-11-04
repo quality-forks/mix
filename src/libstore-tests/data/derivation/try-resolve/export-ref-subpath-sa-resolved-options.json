@@ -18,5 +18,6 @@
   "preferLocalBuild": false,
   "requiredSystemFeatures": [],
   "transient": false,
+  "trees": [],
   "unsafeDiscardReferences": {}
 }
