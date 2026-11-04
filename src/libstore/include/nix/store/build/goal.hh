@@ -4,6 +4,7 @@
 #include "nix/store/store-api.hh"
 #include "nix/store/build-result.hh"
 
+#include <chrono>
 #include <coroutine>
 #include <queue>
 #include <variant>
@@ -679,6 +680,7 @@ public:
 
 protected:
     Co<void> await(Goals waitees);
+    Co<void> awaitUntil(GoalPtr waitee, std::chrono::steady_clock::time_point deadline);
 
     /**
      * Awaiting on the resulting coroutine yields the goal for several seconds.

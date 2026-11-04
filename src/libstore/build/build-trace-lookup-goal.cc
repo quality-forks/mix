@@ -190,31 +190,42 @@ Goal::Co<Goal::ExitCode> BuildTraceLookupGoal::queryRemote(const StorePath & drv
 {
     DrvOutput id{drvPath, req.output};
 
-    if (!unresolvedGoal)
-        unresolvedGoal = worker.makeDrvOutputSubstitutionGoal(id);
-
     bool resolve = shouldResolve(drv);
+
+    auto inputsRecorded = [&]() {
+        auto * localStore = dynamic_cast<LocalStore *>(&worker.store);
+        if (!localStore)
+            return false;
+        StorePathSet bases;
+        for (auto & input : drv.inputs)
+            if (auto * built = std::get_if<SingleDerivedPath::Built>(&input.raw()))
+                bases.insert(built->getBaseStorePath());
+        return localStore->hasAnyRecordOf(bases);
+    };
+
+    bool askUnresolved = !resolve || !inputsRecorded();
+    if (askUnresolved && !unresolvedGoal)
+        unresolvedGoal = worker.makeDrvOutputSubstitutionGoal(id);
 
     /* The inputs are walked while the unresolved key is in flight, but
        only once it has been out longer than a hit takes (0.23 s through
        ncro), since every input below a hit would be asked for in vain. A
-       goal that finishes first has no waiters left to wake, so only
-       unfinished ones are awaited. */
-    if (resolve && !unresolvedGoal->exitCode) {
-        worker.waitUntil(shared_from_this(), std::chrono::steady_clock::now() + std::chrono::milliseconds(300));
-        co_await Suspend{};
-    }
+       local record of an input already rules out taking a hit, so the key
+       is then not asked for. A goal that finishes first has no waiters
+       left to wake, so only unfinished ones are awaited. */
+    if (askUnresolved && resolve && !unresolvedGoal->exitCode)
+        co_await awaitUntil(unresolvedGoal, std::chrono::steady_clock::now() + std::chrono::milliseconds(300));
 
     std::map<SingleDerivedPath::Built, std::shared_ptr<BuildTraceLookupGoal>> inputGoals;
-    if (resolve && !(unresolvedGoal->exitCode == ecSuccess && !hasLocalRecordsBelow(drv)))
+    if (resolve && !(askUnresolved && unresolvedGoal->exitCode == ecSuccess && !hasLocalRecordsBelow(drv)))
         for (auto & input : drv.inputs)
             if (auto * built = std::get_if<SingleDerivedPath::Built>(&input.raw()))
                 inputGoals.insert_or_assign(*built, worker.makeBuildTraceLookupGoal(*built));
 
-    if (!unresolvedGoal->exitCode)
+    if (askUnresolved && !unresolvedGoal->exitCode)
         co_await await({unresolvedGoal});
 
-    if (unresolvedGoal->exitCode == ecSuccess && (!resolve || !hasLocalRecordsBelow(drv))) {
+    if (askUnresolved && unresolvedGoal->exitCode == ecSuccess && (!resolve || !hasLocalRecordsBelow(drv))) {
         substituted = true;
         traceKey = id;
         outputInfo = unresolvedGoal->outputInfo;

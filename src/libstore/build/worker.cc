@@ -296,6 +296,16 @@ void Worker::waitUntil(GoalPtr goal, steady_time_point deadline)
     waitingUntil.emplace(deadline, goal);
 }
 
+void Worker::cancelWaitUntil(GoalPtr goal, steady_time_point deadline)
+{
+    auto [first, last] = waitingUntil.equal_range(deadline);
+    for (auto i = first; i != last; ++i)
+        if (i->second.lock() == goal) {
+            waitingUntil.erase(i);
+            return;
+        }
+}
+
 void Worker::waitForCompletion(GoalPtr goal)
 {
     goal->trace("waiting for completion callback");

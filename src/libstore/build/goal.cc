@@ -120,6 +120,18 @@ Goal::Co<void> Goal::await(Goals new_waitees)
     }
 }
 
+Goal::Co<void> Goal::awaitUntil(GoalPtr waitee, std::chrono::steady_clock::time_point deadline)
+{
+    assert(waitees.empty());
+    waitees.insert(waitee);
+    addToWeakGoals(waitee->waiters, shared_from_this());
+    worker.waitUntil(shared_from_this(), deadline);
+    co_await Suspend{};
+    worker.cancelWaitUntil(shared_from_this(), deadline);
+    if (waitees.erase(waitee))
+        waitee->waiters.erase(shared_from_this());
+}
+
 void Goal::trace(std::string_view s)
 {
     debug("%1%: %2%", name, s);

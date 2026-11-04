@@ -441,6 +441,11 @@ public:
     void waitUntil(GoalPtr goal, steady_time_point deadline);
 
     /**
+     * Forget the `deadline` that `waitUntil` set for this goal.
+     */
+    void cancelWaitUntil(GoalPtr goal, steady_time_point deadline);
+
+    /**
      * Loop until the specified top-level goals have finished.
      */
     void run(const Goals & topGoals);
