@@ -549,7 +549,7 @@ static void performOp(
             dontCheckSigs = false;
 
         logger->startWork();
-        {
+        store->addInOneTransaction([&] {
             FramedSource source(conn.from);
             auto expected = readNum<uint64_t>(source);
             for (uint64_t i = 0; i < expected; ++i) {
@@ -564,7 +564,7 @@ static void performOp(
                 store->addToStore(info, wrapper, RepairFlag{repair}, dontCheckSigs ? NoCheckSigs : CheckSigs);
                 wrapper.finish();
             }
-        }
+        });
         logger->stopWork();
         break;
     }

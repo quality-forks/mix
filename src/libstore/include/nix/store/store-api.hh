@@ -684,6 +684,15 @@ public:
         PathsSource && pathsToCopy, Activity & act, RepairFlag repair = NoRepair, CheckSigsFlag checkSigs = CheckSigs);
 
     /**
+     * Runs `add`, registering the paths it imports through `addToStore` in
+     * one transaction once it returns, where the store can.
+     */
+    virtual void addInOneTransaction(const std::function<void()> & add)
+    {
+        add();
+    }
+
+    /**
      * Copy the contents of a path to the store and register the
      * validity the resulting path.
      *

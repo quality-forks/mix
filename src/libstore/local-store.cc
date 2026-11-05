@@ -2,6 +2,7 @@
 #include "nix/store/build.hh"
 #include "nix/store/globals.hh"
 #include "nix/store/path-references.hh"
+#include "nix/util/finally.hh"
 #include "nix/util/git.hh"
 #include "nix/util/archive.hh"
 #include "nix/store/pathlocks.hh"
@@ -1328,6 +1329,34 @@ bool LocalStore::realisationIsUntrusted(const Realisation & realisation)
     return config->requireSigs && !realisation.checkSignatures(realisation.id, getPublicKeys());
 }
 
+/**
+ * The paths `LocalStore::addInOneTransaction` imports on this thread, locked
+ * until they are registered.
+ */
+struct DeferredRegistration
+{
+    ValidPathInfos infos;
+    std::vector<PathLocks> locks;
+};
+
+static thread_local DeferredRegistration * deferredRegistration = nullptr;
+
+void LocalStore::addInOneTransaction(const std::function<void()> & add)
+{
+    if (deferredRegistration)
+        return add();
+
+    DeferredRegistration deferred;
+    deferredRegistration = &deferred;
+    Finally reset([&] { deferredRegistration = nullptr; });
+    add();
+    deferredRegistration = nullptr;
+    if (!deferred.infos.empty())
+        registerValidPaths(deferred.infos);
+    for (auto & lock : deferred.locks)
+        lock.setDeletion(true);
+}
+
 void LocalStore::addToStore(const ValidPathInfo & info, Source & source, RepairFlag repair, CheckSigsFlag checkSigs)
 {
     if (checkSigs && pathInfoIsUntrusted(info))
@@ -1335,6 +1364,9 @@ void LocalStore::addToStore(const ValidPathInfo & info, Source & source, RepairF
 
     {
         addTempRoot(info.path);
+
+        if (deferredRegistration && deferredRegistration->infos.contains(info.path))
+            return;
 
         if (repair || !isValidPath(info.path)) {
 
@@ -1458,6 +1490,11 @@ void LocalStore::addToStore(const ValidPathInfo & info, Source & source, RepairF
                     syncParent(realPath);
                 }
 
+                if (deferredRegistration) {
+                    deferredRegistration->infos.insert_or_assign(info.path, info);
+                    deferredRegistration->locks.push_back(std::move(outputLock));
+                    return;
+                }
                 registerValidPath(info);
             } else
                 // We may have a negative cache entry for this path, so get rid of it.

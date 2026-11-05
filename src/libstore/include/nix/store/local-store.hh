@@ -328,6 +328,8 @@ public:
 
     void addToStore(const ValidPathInfo & info, Source & source, RepairFlag repair, CheckSigsFlag checkSigs) override;
 
+    void addInOneTransaction(const std::function<void()> & add) override;
+
     StorePath addToStoreFromDump(
         Source & dump,
         std::string_view name,

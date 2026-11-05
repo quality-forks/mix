@@ -1,5 +1,6 @@
 #include "nix/store/restricted-store.hh"
 #include "nix/store/build.hh"
+#include "nix/util/finally.hh"
 #include "nix/store/build-result.hh"
 #include "nix/store/submit-store.hh"
 #include "nix/store/build/worker.hh"
@@ -101,6 +102,14 @@ public:
         Source & narSource,
         RepairFlag repair = NoRepair,
         CheckSigsFlag checkSigs = CheckSigs) override;
+
+    void addInOneTransaction(const std::function<void()> & add) override;
+
+    /**
+     * The paths `addInOneTransaction` imports, which become the build's
+     * dependencies once they are registered.
+     */
+    std::optional<StorePathSet> batched;
 
     StorePath addToStoreFromDump(
         Source & dump,
@@ -248,9 +257,29 @@ void RestrictedStore::addToStore(
     const ValidPathInfo & info, Source & narSource, RepairFlag repair, CheckSigsFlag checkSigs)
 {
     next->addToStore(info, narSource, repair, checkSigs);
+    if (batched) {
+        batched->insert(info.path);
+        return;
+    }
     if (goal.transient())
         next->markTransient({info.path});
     goal.addDependency(info.path);
+}
+
+void RestrictedStore::addInOneTransaction(const std::function<void()> & add)
+{
+    if (batched)
+        return add();
+
+    batched.emplace();
+    Finally reset([&] { batched.reset(); });
+    next->addInOneTransaction(add);
+    auto paths = std::move(*batched);
+    batched.reset();
+    if (goal.transient())
+        next->markTransient(paths);
+    for (auto & path : paths)
+        goal.addDependency(path);
 }
 
 StorePath RestrictedStore::addToStoreFromDump(
