@@ -441,7 +441,8 @@ public:
     void waitUntil(GoalPtr goal, steady_time_point deadline);
 
     /**
-     * Forget the `deadline` that `waitUntil` set for this goal.
+     * Forget the `deadline` that `waitUntil` set for this goal, and a wake
+     * queued by whichever of the deadline and a waitee came second.
      */
     void cancelWaitUntil(GoalPtr goal, steady_time_point deadline);
 

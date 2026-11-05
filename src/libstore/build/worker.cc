@@ -298,6 +298,7 @@ void Worker::waitUntil(GoalPtr goal, steady_time_point deadline)
 
 void Worker::cancelWaitUntil(GoalPtr goal, steady_time_point deadline)
 {
+    awake.erase(goal);
     auto [first, last] = waitingUntil.equal_range(deadline);
     for (auto i = first; i != last; ++i)
         if (i->second.lock() == goal) {
