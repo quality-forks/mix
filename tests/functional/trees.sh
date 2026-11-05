@@ -41,3 +41,8 @@ expectStderr 1 build -A unreferenced | grepQuiet "in no store path the manifest 
 # Deleting a manifest evicts its tree.
 nix-collect-garbage
 [[ $(entries) == 0 ]]
+
+# The cache is a tmpfs of its own, whose inodes no other user of its
+# filesystem takes.
+[[ $(stat -f -c %T "$trees") == tmpfs ]]
+umount "$trees"

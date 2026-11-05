@@ -36,6 +36,8 @@
 #include <sched.h>
 #include <sys/param.h>
 #include <sys/mount.h>
+#include <sys/vfs.h>
+#include <linux/magic.h>
 #include <sys/syscall.h>
 #include <sys/prctl.h>
 #include <sys/resource.h>
@@ -810,6 +812,44 @@ buildTree(const std::filesystem::path & helper, const OsStrings & args, const st
     return chomp(printed);
 }
 
+/**
+ * Mounts a tmpfs of its own on the tree cache, with an inode for each 1152
+ * bytes of `size`, since NixOS's /run allows 819,200 inodes and llvm22's
+ * source tree alone takes 185k.
+ */
+static void mountTreeCache(
+    const std::filesystem::path & helper,
+    const std::filesystem::path & cache,
+    uint64_t size,
+    const std::filesystem::path & realStoreDir)
+{
+    auto mounted = [&] {
+        struct statfs fs;
+        return statfs(cache.c_str(), &fs) == 0 && fs.f_type == TMPFS_MAGIC
+               && nix::stat(cache).st_dev != nix::stat(cache.parent_path()).st_dev;
+    };
+    if (pathExists(cache) && mounted())
+        return;
+
+    createDirs(cache);
+    auto lockPath = cache.native() + ".lock";
+    AutoCloseFD lock = open(lockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (!lock || flock(lock.get(), LOCK_EX) == -1)
+        throw SysError("locking %s", PathFmt(lockPath));
+    if (mounted())
+        return;
+
+    try {
+        runProgram(helper, false, {"tree", "evict", "--cache", cache.native(), "--size", "0", realStoreDir.native()});
+    } catch (Error & e) {
+        warn("evicting the trees beneath the tree cache: %s", e.msg());
+    }
+
+    auto options = fmt("mode=0700,size=%d,nr_inodes=%d", size, size / 1152 + 1024);
+    if (mount("tmpfs", cache.c_str(), "tmpfs", MS_NOSUID | MS_NODEV, options.c_str()) == -1)
+        throw SysError("mounting a tmpfs on the tree cache %s", PathFmt(cache));
+}
+
 ChrootLinuxDerivationBuilder::Tree
 ChrootLinuxDerivationBuilder::mountTree(const StorePath & manifest, const std::filesystem::path & target, bool writable)
 {
@@ -819,6 +859,8 @@ ChrootLinuxDerivationBuilder::mountTree(const StorePath & manifest, const std::f
         throw Error("'%s' mounts trees, but 'tree-helper' is not set", store->printStorePath(drvPath));
     if (getuid() != 0)
         throw Error("'%s' mounts trees, which only Nix running as root can", store->printStorePath(drvPath));
+    mountTreeCache(
+        *helper, localSettings.treeCacheDir.get(), localSettings.treeCacheSize.get(), store->getRealStoreDir());
 
     OsStrings args{
         "tree",

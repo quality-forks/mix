@@ -504,8 +504,9 @@ public:
             *Linux only*
 
             Where [`tree-helper`](#conf-tree-helper) keeps the metadata trees
-            it writes, which belongs on a tmpfs, since a tree holds an empty
-            file for every path of its manifest.
+            it writes. Nix mounts a tmpfs of its own there, sized by
+            [`tree-cache-size`](#conf-tree-cache-size), since a tree holds an
+            inode for every path of its manifest.
         )"};
 
     Setting<uint64_t> treeCacheSize{
