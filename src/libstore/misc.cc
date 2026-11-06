@@ -267,8 +267,11 @@ MissingPaths Store::queryMissing(const std::vector<DerivedPath> & targets)
 
                             bool found = false;
                             for (auto & sub : getDefaultSubstituters()) {
-                                /* TODO: Asyncify this. */
-                                auto realisation = sub->queryRealisation({drvPath, outputName});
+                                auto realisation =
+                                    co_await callbackToAwaitable<std::shared_ptr<const UnkeyedRealisation>>(
+                                        [&](Callback<std::shared_ptr<const UnkeyedRealisation>> callback) {
+                                            sub->queryRealisation({drvPath, outputName}, std::move(callback));
+                                        });
                                 if (!realisation)
                                     continue;
                                 found = true;
