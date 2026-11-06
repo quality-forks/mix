@@ -317,7 +317,10 @@ private:
 
 public:
     std::shared_ptr<DerivationTrampolineGoal> makeDerivationTrampolineGoal(
-        const StorePath & drvPath, const OutputsSpec & wantedOutputs, const Derivation & drv, BuildMode buildMode);
+        const StorePath & drvPath,
+        const OutputsSpec & wantedOutputs,
+        ref<const Derivation> drv,
+        BuildMode buildMode);
 
     std::shared_ptr<DerivationGoal> makeDerivationGoal(
         const StorePath & drvPath,

@@ -103,7 +103,7 @@ struct DerivationTrampolineGoal : public Goal
     DerivationTrampolineGoal(
         const StorePath & drvPath,
         const OutputsSpec & wantedOutputs,
-        const Derivation & drv,
+        ref<const Derivation> drv,
         Worker & worker,
         BuildMode buildMode = bmNormal);
 
@@ -123,9 +123,11 @@ private:
     using Result = std::pair<ExitCode, BuildResult>;
 
     Co<ExitCode> init(Co<Result> work);
-    Co<LoadResult> loadDerivation(std::optional<LoadedDerivation> lookedUp);
+    Co<LoadResult> loadDerivation(std::optional<LoadedDerivation> lookedUp, std::optional<LoadedDerivation> producer);
     Co<Result> haveToLoadFromStore();
-    Co<std::optional<Result>> substituteFromBuildTrace(std::optional<LoadedDerivation> & lookedUp);
+    GoalPtr obtainGoal(std::optional<LoadedDerivation> producer);
+    Co<std::optional<Result>>
+    substituteFromBuildTrace(std::optional<LoadedDerivation> & lookedUp, std::optional<LoadedDerivation> & producer);
     Co<Result> haveDerivation(StorePath drvPath, ref<const Derivation> drv);
 
     BuildMode buildMode;

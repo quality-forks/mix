@@ -46,14 +46,17 @@ struct BuildTraceLookupGoal : public Goal
     std::shared_ptr<const Derivation> drv;
 
     /**
+     * The lookup of the derivation output `req`'s derivation is, if it is one.
+     */
+    std::shared_ptr<BuildTraceLookupGoal> producerGoal;
+
+    /**
      * Record how the wanted output and the derivations producing it were
      * found, after its output path was substituted.
      */
     void registerBuildTrace();
 
 private:
-
-    std::shared_ptr<BuildTraceLookupGoal> producerGoal;
 
     std::shared_ptr<DrvOutputSubstitutionGoal> unresolvedGoal;
 

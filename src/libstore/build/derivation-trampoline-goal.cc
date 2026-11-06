@@ -23,10 +23,10 @@ DerivationTrampolineGoal::DerivationTrampolineGoal(
 DerivationTrampolineGoal::DerivationTrampolineGoal(
     const StorePath & drvPath,
     const OutputsSpec & wantedOutputs,
-    const Derivation & drv,
+    ref<const Derivation> drv,
     Worker & worker,
     BuildMode buildMode)
-    : Goal(worker, init(haveDerivation(drvPath, make_ref<const Derivation>(drv))))
+    : Goal(worker, init(haveDerivation(drvPath, std::move(drv))))
     , drvReq(makeConstantStorePathRef(drvPath))
     , wantedOutputs(wantedOutputs)
     , buildMode(buildMode)
@@ -78,11 +78,11 @@ Goal::Co<Goal::ExitCode> DerivationTrampolineGoal::init(Co<Result> work)
 
 Goal::Co<DerivationTrampolineGoal::Result> DerivationTrampolineGoal::haveToLoadFromStore()
 {
-    std::optional<LoadedDerivation> lookedUp;
-    if (auto substituted = co_await substituteFromBuildTrace(lookedUp))
+    std::optional<LoadedDerivation> lookedUp, producer;
+    if (auto substituted = co_await substituteFromBuildTrace(lookedUp, producer))
         co_return std::move(*substituted);
 
-    auto loadResult = co_await loadDerivation(std::move(lookedUp));
+    auto loadResult = co_await loadDerivation(std::move(lookedUp), std::move(producer));
     if (auto * failure = std::get_if<BuildResult::Failure>(&loadResult))
         co_return Result{ecFailed, BuildResult{.inner = std::move(*failure)}};
 
@@ -93,8 +93,8 @@ Goal::Co<DerivationTrampolineGoal::Result> DerivationTrampolineGoal::haveToLoadF
 /* Obtaining a dynamic derivation makes it valid along with every path it
    references, which for a planned build are all its tools and objects, so
    outputs found in the build trace are substituted without it. */
-Goal::Co<std::optional<DerivationTrampolineGoal::Result>>
-DerivationTrampolineGoal::substituteFromBuildTrace(std::optional<LoadedDerivation> & lookedUp)
+Goal::Co<std::optional<DerivationTrampolineGoal::Result>> DerivationTrampolineGoal::substituteFromBuildTrace(
+    std::optional<LoadedDerivation> & lookedUp, std::optional<LoadedDerivation> & producer)
 {
     auto * outputNames = std::get_if<OutputsSpec::Names>(&wantedOutputs.raw);
     if (buildMode != bmNormal || !outputNames || !std::holds_alternative<SingleDerivedPath::Built>(drvReq->raw())
@@ -111,11 +111,12 @@ DerivationTrampolineGoal::substituteFromBuildTrace(std::optional<LoadedDerivatio
 
     co_await await(std::move(waitees));
 
-    for (auto & [_, lookup] : lookups)
-        if (lookup->concreteDrvPath && lookup->drv) {
+    for (auto & [_, lookup] : lookups) {
+        if (!lookedUp && lookup->concreteDrvPath && lookup->drv)
             lookedUp.emplace(*lookup->concreteDrvPath, ref<const Derivation>(lookup->drv));
-            break;
-        }
+        if (auto & above = lookup->producerGoal; !producer && above && above->concreteDrvPath && above->drv)
+            producer.emplace(*above->concreteDrvPath, ref<const Derivation>(above->drv));
+    }
 
     Goals substitutions;
     if (nrFailed == 0)
@@ -149,8 +150,23 @@ DerivationTrampolineGoal::substituteFromBuildTrace(std::optional<LoadedDerivatio
     };
 }
 
-Goal::Co<DerivationTrampolineGoal::LoadResult>
-DerivationTrampolineGoal::loadDerivation(std::optional<LoadedDerivation> lookedUp)
+/* The lookup that found no build trace entry already parsed the derivation
+   whose output is the one wanted, which saves parsing it again to build it. */
+GoalPtr DerivationTrampolineGoal::obtainGoal(std::optional<LoadedDerivation> producer)
+{
+    auto * built = std::get_if<SingleDerivedPath::Built>(&drvReq->raw());
+    auto * base = built ? std::get_if<SingleDerivedPath::Opaque>(&built->drvPath->raw()) : nullptr;
+    if (!producer || !base || base->path != producer->first
+        || !(worker.evalStore.isValidPath(base->path) || worker.store.isValidPath(base->path)))
+        return worker.makeGoal(DerivedPath::fromSingle(*drvReq));
+
+    worker.evalStore.addTempRoot(base->path);
+    return worker.makeDerivationTrampolineGoal(
+        base->path, OutputsSpec::Names{built->output}, std::move(producer->second), bmNormal);
+}
+
+Goal::Co<DerivationTrampolineGoal::LoadResult> DerivationTrampolineGoal::loadDerivation(
+    std::optional<LoadedDerivation> lookedUp, std::optional<LoadedDerivation> producer)
 {
     trace("need to load derivation from file");
 
@@ -177,7 +193,7 @@ DerivationTrampolineGoal::loadDerivation(std::optional<LoadedDerivation> lookedU
                 drvReq->to_string(worker.store)));
     } else {
         trace("need to obtain drv we want to build");
-        Goals waitees{worker.makeGoal(DerivedPath::fromSingle(*drvReq))};
+        Goals waitees{obtainGoal(std::move(producer))};
         co_await await(std::move(waitees));
     }
 

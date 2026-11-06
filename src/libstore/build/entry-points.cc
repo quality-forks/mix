@@ -116,7 +116,8 @@ BuildResult Worker::buildDerivation(const StorePath & drvPath, const BasicDeriva
     if (!store.isValidPath(drvPath))
         tryBuildHook = false;
 
-    auto goal = makeDerivationTrampolineGoal(drvPath, OutputsSpec::All{}, unresolve(drv), buildMode);
+    auto goal = makeDerivationTrampolineGoal(
+        drvPath, OutputsSpec::All{}, make_ref<const Derivation>(unresolve(drv)), buildMode);
 
     try {
         run(Goals{goal});

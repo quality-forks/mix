@@ -103,13 +103,13 @@ std::shared_ptr<DerivationTrampolineGoal> Worker::makeDerivationTrampolineGoal(
 }
 
 std::shared_ptr<DerivationTrampolineGoal> Worker::makeDerivationTrampolineGoal(
-    const StorePath & drvPath, const OutputsSpec & wantedOutputs, const Derivation & drv, BuildMode buildMode)
+    const StorePath & drvPath, const OutputsSpec & wantedOutputs, ref<const Derivation> drv, BuildMode buildMode)
 {
     return initGoalIfNeeded(
         derivationTrampolineGoals.ensureSlot(DerivedPath::Opaque{drvPath}).value[wantedOutputs],
         drvPath,
         wantedOutputs,
-        drv,
+        std::move(drv),
         *this,
         buildMode);
 }
