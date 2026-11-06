@@ -3,7 +3,7 @@ with import ./config.nix;
 let
   data = builtins.toFile "data" "hello";
   blob = builtins.unsafeDiscardStringContext data;
-  manifest = builtins.toFile "listed.tree" (
+  manifest = builtins.toFile "listed.veneer" (
     builtins.toJSON {
       "a/b" = {
         file = {
@@ -27,7 +27,7 @@ let
     name:
     mkDerivation {
       inherit name;
-      __trees = [ manifest ];
+      __veneers = [ manifest ];
       buildCommand = ''
         [[ $(cat ${manifest}/a/b) == hello ]]
         [[ $(cat ${manifest}/d) == hello ]]
@@ -45,10 +45,9 @@ in
 
   writable = mkDerivation {
     name = "writable";
-    __trees = [ manifest ];
-    __writableTrees = [
-      "source"
+    __veneers = [
       manifest
+      "source=${manifest}"
     ];
     buildCommand = ''
       [[ $(stat -c %u $NIX_BUILD_TOP/source/a/b) == $(id -u) ]]
@@ -64,7 +63,12 @@ in
   structured = mkDerivation {
     name = "structured";
     __structuredAttrs = true;
-    __writableTrees.source = manifest;
+    __veneers = [
+      {
+        veneer = manifest;
+        writableAt = "source";
+      }
+    ];
     buildCommand = ''
       echo more >> $NIX_BUILD_TOP/source/a/b
       [[ $(cat $NIX_BUILD_TOP/source/a/b) == hellomore ]]
@@ -74,8 +78,8 @@ in
 
   unreferenced = mkDerivation {
     name = "unreferenced";
-    __trees = [
-      (builtins.toFile "unreferenced.tree" (
+    __veneers = [
+      (builtins.toFile "unreferenced.veneer" (
         builtins.toJSON {
           a.file = {
             data = blob;

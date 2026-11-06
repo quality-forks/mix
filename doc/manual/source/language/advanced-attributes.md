@@ -35,36 +35,28 @@ Derivations can declare some infrequently used optional attributes.
 
     It is an error to list a store path that is not an input of the derivation.
 
-  - [`__trees`]{#adv-attr-trees}\
-    A list of manifests, store paths that are inputs of the derivation, each mounted read-only inside the [sandbox](@docroot@/command-ref/conf-file.md#conf-sandbox) at its own store path.
+  - [`__veneers`]{#adv-attr-veneers}\
+    A list of manifests, store paths that are inputs of the derivation, each mounted inside the [sandbox](@docroot@/command-ref/conf-file.md#conf-sandbox) as a veneer.
     The mount holds the paths the manifest lists, each file with the bytes of a store path the manifest refers to, and reaches no other store path.
     Like [`hiddenInputs`](#adv-attr-hiddenInputs), a manifest and its closure are realised but not otherwise made available, and the build's input closure stops at the manifest, since a valid manifest keeps its references valid.
 
-    The program in [`tree-helper`](@docroot@/command-ref/conf-file.md#conf-tree-helper) reads the manifest and writes its tree's metadata to [`tree-cache-dir`](@docroot@/command-ref/conf-file.md#conf-tree-cache-dir), which an overlay mounts with the store as a data-only layer.
-    This needs a sandboxed build on Linux 6.8 or newer, with Nix running as root, or an [external builder](@docroot@/command-ref/conf-file.md#conf-external-builders) that mounts trees.
+    A manifest on its own is mounted read-only at its own store path.
+    An entry `{ veneer = manifest; writableAt = dir; }`, or `dir=manifest` without [`__structuredAttrs`](#adv-attr-structuredAttrs), is mounted writable on *dir* of the build's temporary directory.
+    Its files appear owned by the build user, and the changes stay outside the sandbox, leaving the shared veneer and the store untouched.
+    A build that would copy a tree to change it mounts the veneer where the copy went, so the paths it records stay the same.
+
+    The program in [`veneer-helper`](@docroot@/command-ref/conf-file.md#conf-veneer-helper) reads the manifest and writes the veneer's metadata to [`veneer-cache-dir`](@docroot@/command-ref/conf-file.md#conf-veneer-cache-dir), which an overlay mounts with the store as a data-only layer.
+    This needs a sandboxed build on Linux 6.8 or newer, with Nix running as root, or an [external builder](@docroot@/command-ref/conf-file.md#conf-external-builders) that mounts veneers.
 
     ```nix
     derivation {
       ...
-      __trees = [ sources ];
+      __structuredAttrs = true;
+      __veneers = [ headers { veneer = sources; writableAt = "source"; } ];
     };
     ```
 
-    It is an error to list a store path that is not an input of the derivation.
-
-  - [`__writableTrees`]{#adv-attr-writableTrees}\
-    Manifests like those of [`__trees`](#adv-attr-trees), each mounted writable on a directory of the build's temporary directory.
-    The tree's files appear owned by the build user, and the changes stay outside the sandbox, leaving the shared tree and the store untouched.
-    A build that would copy a tree to change it mounts it where the copy went, so the paths it records stay the same.
-
-    With [`__structuredAttrs`](#adv-attr-structuredAttrs) it is an attribute set from directory name to manifest, and otherwise a list of directory names each followed by its manifest:
-
-    ```nix
-    derivation {
-      ...
-      __writableTrees = [ "source" sources ];
-    };
-    ```
+    It is an error to list a store path that is not an input of the derivation, or two veneers at one directory.
 
   - [`passAsFile`]{#adv-attr-passAsFile}\
     A list of names of attributes whose environment variables should be marked

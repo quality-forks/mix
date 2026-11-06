@@ -319,7 +319,7 @@ static int main_build_remote(int argc, char ** argv)
 
         {
             Activity act(*logger, lvlTalkative, actUnknown, fmt("copying dependencies to '%s'", storeUri));
-            /* The inputs stop at tree manifests, whose closures a store
+            /* The inputs stop at veneer manifests, whose closures a store
                holding the manifest holds too, so only the closures of the
                inputs the remote lacks are copied. */
             sshStore->addTempRoots(inputs);

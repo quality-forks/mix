@@ -38,12 +38,11 @@ struct ChrootLinuxDerivationBuilder : ChrootDerivationBuilder, LinuxDerivationBu
     std::optional<std::filesystem::path> cgroup;
 
     /**
-     * A tree of `__trees` or `__writableTrees`, the overlay the builder
-     * moves onto `target`, and a shared lock on its metadata tree,
-     * which the tree cache evicts only once no build holds it. The overlay
-     * closes first.
+     * A veneer of `__veneers`, the overlay the builder moves onto
+     * `target`, and a shared lock on its metadata tree, which the veneer
+     * cache evicts only once no build holds it. The overlay closes first.
      */
-    struct Tree
+    struct Veneer
     {
         std::filesystem::path target;
         bool writable;
@@ -51,7 +50,7 @@ struct ChrootLinuxDerivationBuilder : ChrootDerivationBuilder, LinuxDerivationBu
         AutoCloseFD mount;
     };
 
-    std::vector<Tree> trees;
+    std::vector<Veneer> veneers;
 
     ChrootLinuxDerivationBuilder(
         std::shared_ptr<BuildingStore> store,
@@ -73,7 +72,7 @@ struct ChrootLinuxDerivationBuilder : ChrootDerivationBuilder, LinuxDerivationBu
 
     void prepareSandbox() override;
 
-    Tree mountTree(const StorePath & manifest, const std::filesystem::path & target, bool writable);
+    Veneer mountVeneer(const StorePath & manifest, const std::filesystem::path & target, bool writable);
 
     void startChild() override;
 

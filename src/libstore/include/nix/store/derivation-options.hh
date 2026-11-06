@@ -153,24 +153,24 @@ struct Options
     std::set<Input> hiddenInputs;
 
     /**
-     * env: __trees
+     * env: __veneers
      *
-     * Manifests of trees, each mounted read-only at its own store path
+     * Manifests of veneers, each mounted read-only at its own store path
      * inside the sandbox, where only the files it lists are reachable.
      * Like hidden inputs, a manifest and its closure are not otherwise
      * made available inside the sandbox.
      */
-    std::set<Input> trees;
+    std::set<Input> veneers;
 
     /**
-     * env: __writableTrees
+     * env: __veneers
      *
-     * Manifests of trees, each mounted writable as the build user on the
+     * Manifests of veneers, each mounted writable as the build user on the
      * directory of the build's temporary directory it is keyed by, its
-     * changes kept outside the sandbox. A build that mounts a tree where it
-     * would have copied it records the same paths.
+     * changes kept outside the sandbox. A build that mounts a veneer where
+     * it would have copied a tree records the same paths.
      */
-    std::map<std::string, Input, std::less<>> writableTrees;
+    std::map<std::string, Input, std::less<>> writableVeneers;
 
     /**
      * env: __sandboxProfile

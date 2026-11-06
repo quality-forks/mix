@@ -161,6 +161,43 @@ DerivationOptions<SingleDerivedPath> derivationOptionsFromStructuredAttrs(
             return pathS;
     };
 
+    std::set<SingleDerivedPath> veneers;
+    std::map<std::string, SingleDerivedPath, std::less<>> writableVeneers;
+    auto addVeneer = [&](const std::string & manifest, std::optional<std::string> dir) {
+        static std::regex regex("[A-Za-z_][A-Za-z0-9_.-]*");
+        if (!dir)
+            veneers.insert(parseSingleDerivedPath(manifest));
+        else if (!std::regex_match(*dir, regex))
+            throw Error("invalid directory name '%s' in '__veneers'", *dir);
+        else if (!writableVeneers.emplace(*dir, parseSingleDerivedPath(manifest)).second)
+            throw Error("two veneers in '__veneers' are writable at '%s'", *dir);
+    };
+
+    if (parsed) {
+        if (auto * e = get(parsed->structuredAttrs, "__veneers")) {
+            if (!e->is_array())
+                throw Error("'__veneers' in structured attrs is not a list");
+            for (auto & entry : *e)
+                if (entry.is_string())
+                    addVeneer(getString(entry), std::nullopt);
+                else if (entry.is_object()) {
+                    auto & object = getObject(entry);
+                    auto * writableAt = optionalValueAt(object, "writableAt");
+                    addVeneer(
+                        getString(valueAt(object, "veneer")),
+                        writableAt ? std::optional{getString(*writableAt)} : std::nullopt);
+                } else
+                    throw Error("an entry of '__veneers' is neither a string nor an attribute set");
+        }
+    } else if (auto * s = get(env, "__veneers"))
+        for (auto & token : tokenizeString<Strings>(*s)) {
+            auto equals = token.find('=');
+            if (equals != token.npos && !token.starts_with('/'))
+                addVeneer(token.substr(equals + 1), token.substr(0, equals));
+            else
+                addVeneer(token, std::nullopt);
+        }
+
     if (shouldWarn && parsed) {
         auto & structuredAttrs = parsed->structuredAttrs;
 
@@ -329,43 +366,8 @@ DerivationOptions<SingleDerivedPath> derivationOptionsFromStructuredAttrs(
                     ret.insert(parseSingleDerivedPath(s));
                 return ret;
             }(),
-        .trees =
-            [&] {
-                std::set<SingleDerivedPath> ret;
-                for (auto & s : getStringSetAttr(env, parsed, "__trees").value_or(StringSet{}))
-                    ret.insert(parseSingleDerivedPath(s));
-                return ret;
-            }(),
-        .writableTrees =
-            [&] {
-                std::map<std::string, SingleDerivedPath, std::less<>> ret;
-                auto add = [&](std::string dir, const std::string & manifest) {
-                    static std::regex regex("[A-Za-z_][A-Za-z0-9_.-]*");
-                    if (!std::regex_match(dir, regex))
-                        throw Error("invalid directory name '%s' in '__writableTrees'", dir);
-                    ret.insert_or_assign(std::move(dir), parseSingleDerivedPath(manifest));
-                };
-
-                if (parsed) {
-                    auto * e = get(parsed->structuredAttrs, "__writableTrees");
-                    if (!e)
-                        return ret;
-                    if (!e->is_object())
-                        throw Error("'__writableTrees' in structured attrs is not a JSON object");
-                    for (auto & [dir, manifest] : getObject(*e))
-                        add(dir, getString(manifest));
-                } else {
-                    auto s = getOr(env, "__writableTrees", "");
-                    Strings ss = tokenizeString<Strings>(s);
-                    if (ss.size() % 2 != 0)
-                        throw Error("odd number of tokens in '__writableTrees': '%1%'", s);
-                    for (auto i = ss.begin(); i != ss.end();) {
-                        auto dir = std::move(*i++);
-                        add(std::move(dir), *i++);
-                    }
-                }
-                return ret;
-            }(),
+        .veneers = std::move(veneers),
+        .writableVeneers = std::move(writableVeneers),
         .additionalSandboxProfile =
             getStringAttr(env, parsed, "__sandboxProfile").value_or(defaults.additionalSandboxProfile),
         .noChroot = getBoolAttr(env, parsed, "__noChroot", defaults.noChroot),
@@ -554,20 +556,20 @@ std::optional<Options<StorePath>> tryResolve(
         resolvedHiddenInputs.insert(*resolvedPath);
     }
 
-    std::set<StorePath> resolvedTrees;
-    for (const auto & input : drvOptions.trees) {
+    std::set<StorePath> resolvedVeneers;
+    for (const auto & input : drvOptions.veneers) {
         auto resolvedPath = tryResolvePath(input);
         if (!resolvedPath)
             return std::nullopt;
-        resolvedTrees.insert(*resolvedPath);
+        resolvedVeneers.insert(*resolvedPath);
     }
 
-    std::map<std::string, StorePath, std::less<>> resolvedWritableTrees;
-    for (const auto & [dir, input] : drvOptions.writableTrees) {
+    std::map<std::string, StorePath, std::less<>> resolvedWritableVeneers;
+    for (const auto & [dir, input] : drvOptions.writableVeneers) {
         auto resolvedPath = tryResolvePath(input);
         if (!resolvedPath)
             return std::nullopt;
-        resolvedWritableTrees.emplace(dir, *resolvedPath);
+        resolvedWritableVeneers.emplace(dir, *resolvedPath);
     }
 
     // Return resolved Options using designated initializers
@@ -577,8 +579,8 @@ std::optional<Options<StorePath>> tryResolve(
         .passAsFile = drvOptions.passAsFile,
         .exportReferencesGraph = *resolvedExportGraph,
         .hiddenInputs = std::move(resolvedHiddenInputs),
-        .trees = std::move(resolvedTrees),
-        .writableTrees = std::move(resolvedWritableTrees),
+        .veneers = std::move(resolvedVeneers),
+        .writableVeneers = std::move(resolvedWritableVeneers),
         .additionalSandboxProfile = drvOptions.additionalSandboxProfile,
         .noChroot = drvOptions.noChroot,
         .impureHostDeps = drvOptions.impureHostDeps,
@@ -628,8 +630,8 @@ static nix::DerivationOptions<Inputs> derivationOptionsFromJson(const nlohmann::
         .passAsFile = getStringSet(valueAt(json, "passAsFile")),
         .exportReferencesGraph = valueAt(json, "exportReferencesGraph"),
         .hiddenInputs = valueAt(json, "hiddenInputs"),
-        .trees = valueAt(json, "trees"),
-        .writableTrees = valueAt(json, "writableTrees"),
+        .veneers = valueAt(json, "veneers"),
+        .writableVeneers = valueAt(json, "writableVeneers"),
 
         .additionalSandboxProfile = getString(valueAt(json, "additionalSandboxProfile")),
         .noChroot = getBoolean(valueAt(json, "noChroot")),
@@ -669,8 +671,8 @@ static void derivationOptionsToJson(nlohmann::json & json, const nix::Derivation
     json["passAsFile"] = o.passAsFile;
     json["exportReferencesGraph"] = o.exportReferencesGraph;
     json["hiddenInputs"] = o.hiddenInputs;
-    json["trees"] = o.trees;
-    json["writableTrees"] = o.writableTrees;
+    json["veneers"] = o.veneers;
+    json["writableVeneers"] = o.writableVeneers;
 
     json["additionalSandboxProfile"] = o.additionalSandboxProfile;
     json["noChroot"] = o.noChroot;

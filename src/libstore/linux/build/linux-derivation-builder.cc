@@ -494,19 +494,19 @@ enum HelperFd : Descriptor {
     sendPidFd = 5,
     cgroupDirFd = 6,
     /**
-     * The overlay of the first tree, followed by those of the others.
+     * The overlay of the first veneer, followed by those of the others.
      */
-    treeFd = 7,
+    veneerFd = 7,
 };
 
-struct SandboxTree
+struct SandboxVeneer
 {
     std::filesystem::path target;
     bool writable;
 };
 
 /**
- * The build user's ids outside the sandbox, which a writable tree shows its
+ * The build user's ids outside the sandbox, which a writable veneer shows its
  * files as owned by.
  */
 struct SandboxIds
@@ -547,9 +547,9 @@ struct SandboxSpec
     std::string shmSize;
     bool lockEtc;
     /**
-     * Where each tree is mounted, its overlay at `treeFd` plus its index.
+     * Where each veneer is mounted, its overlay at `veneerFd` plus its index.
      */
-    std::vector<SandboxTree> trees;
+    std::vector<SandboxVeneer> veneers;
     SandboxIds hostIds;
     bool allowNewPrivileges;
     bool filterSyscalls;
@@ -565,9 +565,9 @@ struct SandboxSpec
 
 nlohmann::json toJson(const SandboxSpec & spec)
 {
-    auto trees = nlohmann::json::array();
-    for (auto & tree : spec.trees)
-        trees.push_back({{"target", tree.target.native()}, {"writable", tree.writable}});
+    auto veneers = nlohmann::json::array();
+    for (auto & veneer : spec.veneers)
+        veneers.push_back({{"target", veneer.target.native()}, {"writable", veneer.writable}});
 
     auto pathsInChroot = nlohmann::json::array();
     for (auto & [target, path] : spec.pathsInChroot)
@@ -588,7 +588,7 @@ nlohmann::json toJson(const SandboxSpec & spec)
         {"mountSys", spec.mountSys},
         {"shmSize", spec.shmSize},
         {"lockEtc", spec.lockEtc},
-        {"trees", trees},
+        {"veneers", veneers},
         {"hostIds", {{"uid", spec.hostIds.uid}, {"gid", spec.hostIds.gid}, {"count", spec.hostIds.count}}},
         {"allowNewPrivileges", spec.allowNewPrivileges},
         {"filterSyscalls", spec.filterSyscalls},
@@ -624,9 +624,9 @@ nlohmann::json toJson(const SandboxSpec & spec)
 
 SandboxSpec sandboxSpecFromJson(const nlohmann::json & json)
 {
-    std::vector<SandboxTree> trees;
-    for (auto & tree : json.at("trees"))
-        trees.push_back({.target = tree.at("target").get<std::string>(), .writable = tree.at("writable")});
+    std::vector<SandboxVeneer> veneers;
+    for (auto & veneer : json.at("veneers"))
+        veneers.push_back({.target = veneer.at("target").get<std::string>(), .writable = veneer.at("writable")});
 
     PathsInChroot pathsInChroot;
     for (auto & path : json.at("pathsInChroot"))
@@ -668,7 +668,7 @@ SandboxSpec sandboxSpecFromJson(const nlohmann::json & json)
         .mountSys = json.at("mountSys"),
         .shmSize = json.at("shmSize"),
         .lockEtc = json.at("lockEtc"),
-        .trees = std::move(trees),
+        .veneers = std::move(veneers),
         .hostIds{
             .uid = json.at("hostIds").at("uid"),
             .gid = json.at("hostIds").at("gid"),
@@ -763,31 +763,31 @@ void ChrootLinuxDerivationBuilder::prepareSandbox()
         // chownToBuilder(*cgroup / "cgroup.subtree_control");
     }
 
-    for (auto & manifest : drvOptions.trees) {
-        trees.push_back(mountTree(manifest, store->printStorePath(manifest), false));
-        createDirs(chrootRootDir / trees.back().target.relative_path());
+    for (auto & manifest : drvOptions.veneers) {
+        veneers.push_back(mountVeneer(manifest, store->printStorePath(manifest), false));
+        createDirs(chrootRootDir / veneers.back().target.relative_path());
     }
-    for (auto & [dir, manifest] : drvOptions.writableTrees) {
-        trees.push_back(mountTree(manifest, tmpDirInSandbox() / dir, true));
+    for (auto & [dir, manifest] : drvOptions.writableVeneers) {
+        veneers.push_back(mountVeneer(manifest, tmpDirInSandbox() / dir, true));
         createDirs(tmpDir / dir);
     }
 }
 
 /**
- * Runs `tree-helper tree build`, the path of the tree it prints, or nothing
- * if it needs the manifest's references to write a tree it does not hold.
+ * Runs `veneer-helper veneer build`, the path of the veneer it prints, or nothing
+ * if it needs the manifest's references to write a veneer it does not hold.
  */
 static std::optional<std::filesystem::path>
-buildTree(const std::filesystem::path & helper, const OsStrings & args, const std::optional<std::string> & references)
+buildVeneer(const std::filesystem::path & helper, const OsStrings & args, const std::optional<std::string> & references)
 {
-    AutoCloseFD input = memfd_create("nix-tree-references", MFD_CLOEXEC);
-    AutoCloseFD errors = memfd_create("nix-tree-errors", MFD_CLOEXEC);
+    AutoCloseFD input = memfd_create("nix-veneer-references", MFD_CLOEXEC);
+    AutoCloseFD errors = memfd_create("nix-veneer-errors", MFD_CLOEXEC);
     if (!input || !errors)
-        throw SysError("creating the input of the tree helper");
+        throw SysError("creating the input of the veneer helper");
     if (references) {
         writeFull(input.get(), *references);
         if (lseek(input.get(), 0, SEEK_SET) == -1)
-            throw SysError("rewinding the input of the tree helper");
+            throw SysError("rewinding the input of the veneer helper");
     }
 
     Pipe output;
@@ -806,18 +806,18 @@ buildTree(const std::filesystem::path & helper, const OsStrings & args, const st
         return std::nullopt;
     if (!statusOk(status)) {
         if (lseek(errors.get(), 0, SEEK_SET) == -1)
-            throw SysError("rewinding the errors of the tree helper");
+            throw SysError("rewinding the errors of the veneer helper");
         throw Error("%s %s: %s", PathFmt(helper), statusToString(status), chomp(drainFD(errors.get())));
     }
     return chomp(printed);
 }
 
 /**
- * Mounts a tmpfs of its own on the tree cache, with an inode for each 1152
+ * Mounts a tmpfs of its own on the veneer cache, with an inode for each 1152
  * bytes of `size`, since NixOS's /run allows 819,200 inodes and llvm22's
- * source tree alone takes 185k.
+ * source veneer alone takes 185k.
  */
-static void mountTreeCache(
+static void mountVeneerCache(
     const std::filesystem::path & helper,
     const std::filesystem::path & cache,
     uint64_t size,
@@ -840,73 +840,73 @@ static void mountTreeCache(
         return;
 
     try {
-        runProgram(helper, false, {"tree", "evict", "--cache", cache.native(), "--size", "0", realStoreDir.native()});
+        runProgram(helper, false, {"veneer", "evict", "--cache", cache.native(), "--size", "0", realStoreDir.native()});
     } catch (Error & e) {
-        warn("evicting the trees beneath the tree cache: %s", e.msg());
+        warn("evicting the veneers beneath the veneer cache: %s", e.msg());
     }
 
     auto options = fmt("mode=0700,size=%d,nr_inodes=%d", size, size / 1152 + 1024);
     if (mount("tmpfs", cache.c_str(), "tmpfs", MS_NOSUID | MS_NODEV, options.c_str()) == -1)
-        throw SysError("mounting a tmpfs on the tree cache %s", PathFmt(cache));
+        throw SysError("mounting a tmpfs on the veneer cache %s", PathFmt(cache));
 }
 
-ChrootLinuxDerivationBuilder::Tree
-ChrootLinuxDerivationBuilder::mountTree(const StorePath & manifest, const std::filesystem::path & target, bool writable)
+ChrootLinuxDerivationBuilder::Veneer ChrootLinuxDerivationBuilder::mountVeneer(
+    const StorePath & manifest, const std::filesystem::path & target, bool writable)
 {
     auto & localSettings = store->getLocalSettings();
-    auto & helper = localSettings.treeHelper.get();
+    auto & helper = localSettings.veneerHelper.get();
     if (!helper)
-        throw Error("'%s' mounts trees, but 'tree-helper' is not set", store->printStorePath(drvPath));
+        throw Error("'%s' mounts veneers, but 'veneer-helper' is not set", store->printStorePath(drvPath));
     if (getuid() != 0)
-        throw Error("'%s' mounts trees, which only Nix running as root can", store->printStorePath(drvPath));
-    mountTreeCache(
-        *helper, localSettings.treeCacheDir.get(), localSettings.treeCacheSize.get(), store->getRealStoreDir());
+        throw Error("'%s' mounts veneers, which only Nix running as root can", store->printStorePath(drvPath));
+    mountVeneerCache(
+        *helper, localSettings.veneerCacheDir.get(), localSettings.veneerCacheSize.get(), store->getRealStoreDir());
 
     OsStrings args{
-        "tree",
+        "veneer",
         "build",
         "--cache",
-        localSettings.treeCacheDir.get().native(),
+        localSettings.veneerCacheDir.get().native(),
         "--store-dir",
         store->storeDir,
         "--size",
-        std::to_string(localSettings.treeCacheSize.get()),
+        std::to_string(localSettings.veneerCacheSize.get()),
         store->toRealPath(manifest).native(),
     };
 
-    /* Only a tree the cache lacks needs the manifest's references, which
-       for a source tree are a store path for every file. */
+    /* Only a veneer the cache lacks needs the manifest's references, which
+       for a source veneer are a store path for every file. */
     std::optional<std::string> references;
     auto build = [&] {
-        if (auto built = buildTree(*helper, args, references))
+        if (auto built = buildVeneer(*helper, args, references))
             return *built;
         references.emplace();
         for (auto & reference : store->queryReferences(manifest))
             *references += store->printStorePath(reference) + "\n";
         args.insert(std::prev(args.end()), "--references");
-        return buildTree(*helper, args, references).value();
+        return buildVeneer(*helper, args, references).value();
     };
 
-    /* Eviction may remove a tree between the helper printing its path and
+    /* Eviction may remove a veneer between the helper printing its path and
        the lock on it, after which the path names nothing. */
-    Tree tree{.target = target, .writable = writable};
+    Veneer veneer{.target = target, .writable = writable};
     try {
         std::filesystem::path written;
-        for (int attempt = 0; !tree.lock; ++attempt) {
+        for (int attempt = 0; !veneer.lock; ++attempt) {
             if (attempt == 3)
-                throw Error("the tree was evicted while it was being mounted");
+                throw Error("the veneer was evicted while it was being mounted");
             written = build();
-            tree.lock = open(written.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-            if (!tree.lock) {
+            veneer.lock = open(written.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+            if (!veneer.lock) {
                 if (errno != ENOENT)
-                    throw SysError("opening the tree %s", PathFmt(written));
+                    throw SysError("opening the veneer %s", PathFmt(written));
                 continue;
             }
-            if (flock(tree.lock.get(), LOCK_SH) == -1)
-                throw SysError("locking the tree %s", PathFmt(written));
+            if (flock(veneer.lock.get(), LOCK_SH) == -1)
+                throw SysError("locking the veneer %s", PathFmt(written));
             struct stat st;
-            if (stat(written.c_str(), &st) == -1 || st.st_ino != nix::fstat(tree.lock.get()).st_ino)
-                tree.lock.close();
+            if (stat(written.c_str(), &st) == -1 || st.st_ino != nix::fstat(veneer.lock.get()).st_ino)
+                veneer.lock.close();
         }
 
         std::vector<std::pair<const char *, std::string>> options{
@@ -915,7 +915,7 @@ ChrootLinuxDerivationBuilder::mountTree(const StorePath & manifest, const std::f
             {"metacopy", "on"},
         };
         if (writable) {
-            auto changes = topTmpDir / "trees" / std::to_string(trees.size());
+            auto changes = topTmpDir / "veneers" / std::to_string(veneers.size());
             createDirs(changes / "upper");
             createDirs(changes / "work");
             options.emplace_back("upperdir", (changes / "upper").native());
@@ -930,15 +930,15 @@ ChrootLinuxDerivationBuilder::mountTree(const StorePath & manifest, const std::f
                 throw SysError("setting '%s' of the overlay", key);
         if (fsconfig(fs.get(), FSCONFIG_CMD_CREATE, nullptr, nullptr, 0) == -1)
             throw SysError("creating the overlay");
-        tree.mount = fsmount(
+        veneer.mount = fsmount(
             fs.get(), FSMOUNT_CLOEXEC, (writable ? 0 : MOUNT_ATTR_RDONLY) | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV);
-        if (!tree.mount)
+        if (!veneer.mount)
             throw SysError("mounting the overlay");
     } catch (Error & e) {
-        e.addTrace({}, "while mounting the tree of '%s'", store->printStorePath(manifest));
+        e.addTrace({}, "while mounting the veneer of '%s'", store->printStorePath(manifest));
         throw;
     }
-    return tree;
+    return veneer;
 }
 
 void ChrootLinuxDerivationBuilder::startChild()
@@ -1008,8 +1008,9 @@ void ChrootLinuxDerivationBuilder::startChild()
         .mountSys = buildUser && buildUser->getUIDCount() != 1,
         .shmSize = localSettings.sandboxShmSize,
         .lockEtc = !drvOptions.useUidRange(drv),
-        .trees = trees | std::views::transform([](auto & tree) { return SandboxTree{tree.target, tree.writable}; })
-                 | std::ranges::to<std::vector>(),
+        .veneers = veneers
+                   | std::views::transform([](auto & veneer) { return SandboxVeneer{veneer.target, veneer.writable}; })
+                   | std::ranges::to<std::vector>(),
         .hostIds{
             .uid = buildUser ? buildUser->getUID() : getuid(),
             .gid = buildUser ? buildUser->getGID() : getgid(),
@@ -1067,8 +1068,8 @@ void ChrootLinuxDerivationBuilder::startChild()
     };
     if (cgroupFd)
         fds.push_back({cgroupFd.get(), cgroupDirFd});
-    for (auto [index, tree] : std::views::enumerate(trees))
-        fds.push_back({tree.mount.get(), treeFd + Descriptor(index)});
+    for (auto [index, veneer] : std::views::enumerate(veneers))
+        fds.push_back({veneer.mount.get(), veneerFd + Descriptor(index)});
 
     helper = spawnProgram(
         {
@@ -1324,15 +1325,17 @@ static void enterSandbox(SandboxSpec & spec)
         }
     }
 
-    for (auto [index, tree] : std::views::enumerate(spec.trees)) {
-        AutoCloseFD mount = treeFd + Descriptor(index);
+    for (auto [index, veneer] : std::views::enumerate(spec.veneers)) {
+        AutoCloseFD mount = veneerFd + Descriptor(index);
         AutoCloseFD mountPoint = ::openat(
-            chrootRootDirFd.get(), tree.target.relative_path().c_str(), O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+            chrootRootDirFd.get(),
+            veneer.target.relative_path().c_str(),
+            O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
         if (!mountPoint)
-            throw SysError("opening the mount point of the tree %s", PathFmt(tree.target));
+            throw SysError("opening the mount point of the veneer %s", PathFmt(veneer.target));
         if (::move_mount(mount.get(), "", mountPoint.get(), "", MOVE_MOUNT_F_EMPTY_PATH | MOVE_MOUNT_T_EMPTY_PATH)
             == -1)
-            throw SysError("mounting the tree %s", PathFmt(tree.target));
+            throw SysError("mounting the veneer %s", PathFmt(veneer.target));
     }
 
     /* Bind a new instance of procfs on /proc. */
@@ -1483,13 +1486,13 @@ static void enterSandbox(SandboxSpec & spec)
 }
 
 /**
- * Shows the files of each writable tree as owned by the build user, since
+ * Shows the files of each writable veneer as owned by the build user, since
  * the metadata trees are root's. Only the initial user namespace may change
  * the overlay made there, so this runs before the clone.
  */
-static void idmapWritableTrees(const SandboxSpec & spec)
+static void idmapWritableVeneers(const SandboxSpec & spec)
 {
-    if (std::ranges::none_of(spec.trees, &SandboxTree::writable))
+    if (std::ranges::none_of(spec.veneers, &SandboxVeneer::writable))
         return;
 
     Pipe entered, done;
@@ -1509,14 +1512,14 @@ static void idmapWritableTrees(const SandboxSpec & spec)
     entered.writeSide.close();
     done.readSide.close();
     if (drainFD(entered.readSide.get()) != "1")
-        throw Error("creating the user namespace of the writable trees");
+        throw Error("creating the user namespace of the writable veneers");
 
     auto proc = procPath / std::to_string(static_cast<pid_t>(child));
     writeFile(proc / "uid_map", fmt("0 %d %d", spec.hostIds.uid, spec.hostIds.count));
     writeFile(proc / "gid_map", fmt("0 %d %d", spec.hostIds.gid, spec.hostIds.count));
     AutoCloseFD userNamespace = open((proc / "ns" / "user").c_str(), O_RDONLY | O_CLOEXEC);
     if (!userNamespace)
-        throw SysError("opening the user namespace of the writable trees");
+        throw SysError("opening the user namespace of the writable veneers");
     done.writeSide.close();
     child.wait();
 
@@ -1525,12 +1528,12 @@ static void idmapWritableTrees(const SandboxSpec & spec)
         uint64_t attrSet, attrClear, propagation, userNamespace;
     } attributes{.attrSet = MOUNT_ATTR_IDMAP, .userNamespace = uint64_t(userNamespace.get())};
 
-    for (auto [index, tree] : std::views::enumerate(spec.trees))
-        if (tree.writable
+    for (auto [index, veneer] : std::views::enumerate(spec.veneers))
+        if (veneer.writable
             && ::syscall(
-                   __NR_mount_setattr, treeFd + Descriptor(index), "", AT_EMPTY_PATH, &attributes, sizeof(attributes))
+                   __NR_mount_setattr, veneerFd + Descriptor(index), "", AT_EMPTY_PATH, &attributes, sizeof(attributes))
                    == -1)
-            throw SysError("mapping the owner of the tree %s", PathFmt(tree.target));
+            throw SysError("mapping the owner of the veneer %s", PathFmt(veneer.target));
 }
 
 void sandboxHelperMain()
@@ -1562,7 +1565,7 @@ void sandboxHelperMain()
                     "setgroups failed. Set the require-drop-supplementary-groups option to false to skip this step.");
         }
 
-        idmapWritableTrees(spec);
+        idmapWritableVeneers(spec);
 
         ProcessOptions options;
         if (spec.cgroup)
@@ -1587,14 +1590,14 @@ BuilderExit ChrootLinuxDerivationBuilder::unprepareBuild()
 {
     /* Closing the last reference to the sandbox's mount namespace unmounts every bind mount in it
        before close() returns, a cost per input path that would otherwise stall every other goal. */
-    if (sandboxMountNamespace || sandboxUserNamespace || !trees.empty())
+    if (sandboxMountNamespace || sandboxUserNamespace || !veneers.empty())
         std::thread([mountNamespace = std::move(sandboxMountNamespace),
                      userNamespace = std::move(sandboxUserNamespace),
-                     trees = std::move(trees)]() mutable {
+                     veneers = std::move(veneers)]() mutable {
             try {
                 mountNamespace.close();
                 userNamespace.close();
-                trees.clear();
+                veneers.clear();
             } catch (...) {
                 ignoreExceptionInDestructor();
             }

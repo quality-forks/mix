@@ -72,7 +72,7 @@
     "uid-range"
   ],
   "transient": false,
-  "trees": [],
   "unsafeDiscardReferences": {},
-  "writableTrees": {}
+  "veneers": [],
+  "writableVeneers": {}
 }

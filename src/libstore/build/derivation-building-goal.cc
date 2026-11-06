@@ -382,25 +382,25 @@ Goal::Co<DerivationBuildingGoal::Result> DerivationBuildingGoal::tryToBuild()
         }
     }();
 
-    StorePathSet trees = drvOptions.trees;
-    for (auto & [_, manifest] : drvOptions.writableTrees)
-        trees.insert(manifest);
+    StorePathSet manifests = drvOptions.veneers;
+    for (auto & [_, manifest] : drvOptions.writableVeneers)
+        manifests.insert(manifest);
 
     /* Determine the full set of input paths. */
 
     /* Each path in the closure is a database lookup, which would hold up
-       every other goal. A tree manifest refers to every file of its tree,
+       every other goal. A veneer manifest refers to every file of its veneer,
        which a valid manifest keeps valid, so the closure stops at it. */
     StorePathSet inputPaths;
     {
         std::jthread closing;
         inputPaths = co_await AsyncCallback<StorePathSet>{[&](Callback<StorePathSet> callback) {
             closing = std::jthread(
-                [callback = std::move(callback), &store = worker.store, &inputs = drv->inputs, &trees]() mutable {
+                [callback = std::move(callback), &store = worker.store, &inputs = drv->inputs, &manifests]() mutable {
                     try {
                         ReceiveInterrupts receiveInterrupts;
                         StorePathSet closure;
-                        store.computeFSClosureWithLeaves(inputs, closure, trees);
+                        store.computeFSClosureWithLeaves(inputs, closure, manifests);
                         callback(std::move(closure));
                     } catch (...) {
                         callback.rethrow();
@@ -1033,19 +1033,19 @@ Goal::Co<DerivationBuildingGoal::LocalBuildOutcome> DerivationBuildingGoal::buil
                 defaultPathsInChroot.insert_or_assign(p, ChrootPath{.source = p});
             }
 
-            StorePathSet trees = drvOptions.trees;
-            for (auto & [_, manifest] : drvOptions.writableTrees)
-                trees.insert(manifest);
-            for (auto & i : trees)
+            StorePathSet manifests = drvOptions.veneers;
+            for (auto & [_, manifest] : drvOptions.writableVeneers)
+                manifests.insert(manifest);
+            for (auto & i : manifests)
                 if (!drv->inputs.contains(i)) {
                     outputLocks.unlock();
                     co_return BuildError(
                         BuildResult::Failure::InputRejected,
-                        "tree '%s' is not an input of '%s'",
+                        "veneer '%s' is not an input of '%s'",
                         worker.store.printStorePath(i),
                         worker.store.printStorePath(drvPath));
                 }
-            StorePathSet hiddenInputPaths = trees;
+            StorePathSet hiddenInputPaths = manifests;
             if (!drvOptions.hiddenInputs.empty()) {
                 for (auto & i : drvOptions.hiddenInputs)
                     if (!drv->inputs.contains(i)) {
@@ -1060,13 +1060,13 @@ Goal::Co<DerivationBuildingGoal::LocalBuildOutcome> DerivationBuildingGoal::buil
                    `inputs`, so the hidden closure is subtracted from
                    the roots rather than just the hidden inputs. */
                 StorePathSet hiddenClosure;
-                worker.store.computeFSClosureWithLeaves(drvOptions.hiddenInputs, hiddenClosure, trees);
+                worker.store.computeFSClosureWithLeaves(drvOptions.hiddenInputs, hiddenClosure, manifests);
                 StorePathSet visibleInputs;
                 for (auto & i : drv->inputs)
                     if (!hiddenClosure.contains(i))
                         visibleInputs.insert(i);
                 StorePathSet visiblePaths;
-                worker.store.computeFSClosureWithLeaves(visibleInputs, visiblePaths, trees);
+                worker.store.computeFSClosureWithLeaves(visibleInputs, visiblePaths, manifests);
                 for (auto & i : hiddenClosure)
                     if (!visiblePaths.contains(i))
                         hiddenInputPaths.insert(i);

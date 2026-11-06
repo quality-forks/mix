@@ -1019,20 +1019,20 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
 
 #ifdef __linux__
     if ((shouldDelete || evicting) && !results.paths.empty())
-        if (auto & helper = config->getLocalSettings().treeHelper.get())
+        if (auto & helper = config->getLocalSettings().veneerHelper.get())
             try {
                 runProgram(
                     *helper,
                     false,
-                    {"tree",
+                    {"veneer",
                      "evict",
                      "--cache",
-                     config->getLocalSettings().treeCacheDir.get().native(),
+                     config->getLocalSettings().veneerCacheDir.get().native(),
                      "--size",
-                     std::to_string(config->getLocalSettings().treeCacheSize.get()),
+                     std::to_string(config->getLocalSettings().veneerCacheSize.get()),
                      config->realStoreDir.get().native()});
             } catch (Error & e) {
-                warn("evicting the trees of deleted manifests: %s", e.msg());
+                warn("evicting the veneers of deleted manifests: %s", e.msg());
             }
 #endif
 

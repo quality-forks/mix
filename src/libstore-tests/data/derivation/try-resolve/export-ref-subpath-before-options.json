@@ -29,7 +29,7 @@
   "preferLocalBuild": false,
   "requiredSystemFeatures": [],
   "transient": false,
-  "trees": [],
   "unsafeDiscardReferences": {},
-  "writableTrees": {}
+  "veneers": [],
+  "writableVeneers": {}
 }

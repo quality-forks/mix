@@ -483,44 +483,44 @@ public:
 #endif
 
 #ifdef __linux__
-    Setting<std::optional<AbsolutePath>> treeHelper{
+    Setting<std::optional<AbsolutePath>> veneerHelper{
         this,
         std::nullopt,
-        "tree-helper",
+        "veneer-helper",
         R"(
             *Linux only*
 
             The program writing the metadata trees of the manifests a
-            derivation lists in [`__trees`](@docroot@/language/advanced-attributes.md#adv-attr-trees),
-            run as `tree-helper tree build` and `tree-helper tree evict`.
+            derivation lists in [`__veneers`](@docroot@/language/advanced-attributes.md#adv-attr-veneers),
+            run as `veneer-helper veneer build` and `veneer-helper veneer evict`.
             Without it such a derivation fails to build.
         )"};
 
-    Setting<AbsolutePath> treeCacheDir{
+    Setting<AbsolutePath> veneerCacheDir{
         this,
-        "/run/nix/trees",
-        "tree-cache-dir",
+        "/run/nix/veneers",
+        "veneer-cache-dir",
         R"(
             *Linux only*
 
-            Where [`tree-helper`](#conf-tree-helper) keeps the metadata trees
+            Where [`veneer-helper`](#conf-veneer-helper) keeps the metadata trees
             it writes. Nix mounts a tmpfs of its own there, sized by
-            [`tree-cache-size`](#conf-tree-cache-size), since a tree holds an
+            [`veneer-cache-size`](#conf-veneer-cache-size), since a veneer holds an
             inode for every path of its manifest.
         )"};
 
-    Setting<uint64_t> treeCacheSize{
+    Setting<uint64_t> veneerCacheSize{
         this,
         4ULL * 1024 * 1024 * 1024,
-        "tree-cache-size",
+        "veneer-cache-size",
         R"(
             *Linux only*
 
-            How many bytes of kernel memory the trees in
-            [`tree-cache-dir`](#conf-tree-cache-dir) may take, about 1.1 KiB
-            for each path. Writing a tree evicts the least recently used ones
+            How many bytes of kernel memory the veneers in
+            [`veneer-cache-dir`](#conf-veneer-cache-dir) may take, about 1.1 KiB
+            for each path. Writing a veneer evicts the least recently used ones
             no build mounts until they fit, and the garbage collector evicts
-            the trees of the manifests it deletes.
+            the veneers of the manifests it deletes.
         )"};
 #endif
 
@@ -765,8 +765,8 @@ public:
           }
           ```
 
-          A derivation with [`__trees`](@docroot@/language/advanced-attributes.md#adv-attr-trees) or [`__writableTrees`](@docroot@/language/advanced-attributes.md#adv-attr-writableTrees) adds `trees`, one object per tree with `manifest`, `target`, the path in the sandbox the tree is mounted on, `writable`, and `references`, a file in *topTmpDir* listing the store paths the manifest refers to, one per line.
-          The manifests are left out of `inputPaths`, and the helper mounts each tree itself.
+          A derivation with [`__veneers`](@docroot@/language/advanced-attributes.md#adv-attr-veneers) adds `veneers`, one object per veneer with `manifest`, `target`, the path in the sandbox the veneer is mounted on, `writable`, and `references`, a file in *topTmpDir* listing the store paths the manifest refers to, one per line.
+          The manifests are left out of `inputPaths`, and the helper mounts each veneer itself.
         )",
         {},   // aliases
         true, // document default
