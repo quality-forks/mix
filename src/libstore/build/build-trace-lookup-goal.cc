@@ -166,8 +166,7 @@ std::optional<Realisation> BuildTraceLookupGoal::queryLocalRecord(const StorePat
 
 bool BuildTraceLookupGoal::hasLocalRecordsBelow(const Derivation & drv)
 {
-    auto * localStore = dynamic_cast<LocalStore *>(&worker.store);
-    if (!localStore)
+    if (!dynamic_cast<LocalStore *>(&worker.store))
         return false;
 
     StorePathSet closure;
@@ -182,7 +181,7 @@ bool BuildTraceLookupGoal::hasLocalRecordsBelow(const Derivation & drv)
         }
 
     std::erase_if(closure, [](const StorePath & path) { return !path.isDerivation(); });
-    return localStore->hasAnyRecordOf(closure);
+    return worker.anyRecorded(closure);
 }
 
 Goal::Co<Goal::ExitCode> BuildTraceLookupGoal::queryRemote(const StorePath & drvPath, const Derivation & drv)
@@ -192,14 +191,11 @@ Goal::Co<Goal::ExitCode> BuildTraceLookupGoal::queryRemote(const StorePath & drv
     bool resolve = shouldResolve(drv);
 
     auto inputsRecorded = [&]() {
-        auto * localStore = dynamic_cast<LocalStore *>(&worker.store);
-        if (!localStore)
-            return false;
         StorePathSet bases;
         for (auto & input : drv.inputs)
             if (auto * built = std::get_if<SingleDerivedPath::Built>(&input.raw()))
                 bases.insert(built->getBaseStorePath());
-        return localStore->hasAnyRecordOf(bases);
+        return worker.anyRecorded(bases);
     };
 
     bool askUnresolved = !resolve || !inputsRecorded();

@@ -123,7 +123,7 @@ struct LocalStore::State::Stmts
     SQLiteStmt RegisterSettledResolution;
     SQLiteStmt QuerySettledResolution;
     SQLiteStmt ClearSettledResolutions;
-    SQLiteStmt QueryAnyRecordOf;
+    SQLiteStmt QueryRecordedOf;
     SQLiteStmt MarkTransient;
     SQLiteStmt TouchTransient;
     SQLiteStmt QueryTransientPaths;
@@ -456,11 +456,11 @@ LocalStore::LocalStore(ref<const Config> config)
             state->stmts->QuerySettledResolution.create(
                 state->db, "select resolvedPath, outputs from SettledResolutions where drvPath = ?;");
             state->stmts->ClearSettledResolutions.create(state->db, "delete from SettledResolutions;");
-            state->stmts->QueryAnyRecordOf.create(
+            state->stmts->QueryRecordedOf.create(
                 state->db,
                 R"(
-                    select exists (select 1 from BuildTraceV3 where drvPath in (select value from json_each(?1)))
-                        or exists (select 1 from SettledResolutions where drvPath in (select value from json_each(?1)));
+                    select drvPath from BuildTraceV3 where drvPath in (select value from json_each(?1))
+                    union select drvPath from SettledResolutions where drvPath in (select value from json_each(?1));
                 )");
             state->stmts->ForgetBuildTracesOf.create(
                 state->db, "delete from BuildTraceV3 where outputPath in (select value from json_each(?1));");
@@ -823,6 +823,7 @@ void LocalStore::registerDrvOutputUnchecked(const Realisation & info)
                 .exec();
         }
     });
+    ++recordWrites;
 }
 
 void LocalStore::deleteBuildTraces(const std::set<DrvOutput> & keys)
@@ -838,6 +839,7 @@ void LocalStore::deleteBuildTraces(const std::set<DrvOutput> & keys)
             state->stmts->ClearSettledResolutions.use().exec();
         txn.commit();
     });
+    ++recordWrites;
 }
 
 std::optional<SettledResolution> LocalStore::querySettledResolution(const StorePath & drvPath)
@@ -856,17 +858,20 @@ std::optional<SettledResolution> LocalStore::querySettledResolution(const StoreP
     });
 }
 
-bool LocalStore::hasAnyRecordOf(const StorePathSet & drvPaths)
+StorePathSet LocalStore::recordedOf(const StorePathSet & drvPaths)
 {
     if (config->readOnly || !experimentalFeatureSettings.isEnabled(Xp::CaDerivations) || drvPaths.empty())
-        return false;
+        return {};
     auto names = nlohmann::json::array();
     for (auto & drvPath : drvPaths)
         names.push_back(drvPath.to_string());
-    return retrySQLite<bool>([&]() {
+    return retrySQLite<StorePathSet>([&]() {
         auto state(_state->lock());
-        auto query(state->stmts->QueryAnyRecordOf.use().apply(names.dump()));
-        return query.next() && query.getInt(0) != 0;
+        auto query(state->stmts->QueryRecordedOf.use().apply(names.dump()));
+        StorePathSet recorded;
+        while (query.next())
+            recorded.insert(StorePath{query.getStr(0)});
+        return recorded;
     });
 }
 
@@ -950,6 +955,7 @@ void LocalStore::forgetBuildTracesOf(const StorePathSet & outputs)
         auto state(_state->lock());
         state->stmts->ForgetBuildTracesOf.use().apply(pathsJson(*this, outputs)).exec();
     });
+    ++recordWrites;
 }
 
 void LocalStore::registerSettledResolution(const StorePath & drvPath, const SettledResolution & resolution)
@@ -964,6 +970,7 @@ void LocalStore::registerSettledResolution(const StorePath & drvPath, const Sett
             .apply(concatStringsSep(" ", resolution.outputs))
             .exec();
     });
+    ++recordWrites;
 }
 
 void LocalStore::cacheDrvOutputMapping(

@@ -166,6 +166,9 @@ private:
 
     std::optional<Machines> remoteMachines;
 
+    std::map<StorePath, bool> knownRecorded;
+    uint64_t recordWritesSeen = 0;
+
     /**
      * Goals sleeping for a few seconds (polling a lock).
      */
@@ -297,6 +300,14 @@ public:
      * before it looks for a free slot.
      */
     bool remoteMachineFits(const std::string & system, const StringSet & features);
+
+    /**
+     * Whether the local store has a build trace entry or settled resolution
+     * of any of `drvPaths`. Each derivation is asked about once until this
+     * process writes a record, since the dependents of a derivation ask
+     * about it one by one.
+     */
+    bool anyRecorded(const StorePathSet & drvPaths);
 
     Worker(Store & store, Store & evalStore);
     ~Worker();

@@ -402,10 +402,16 @@ public:
     void registerSettledResolution(const StorePath & drvPath, const SettledResolution & resolution);
 
     /**
-     * Whether any of these derivations has a build trace entry or a settled
+     * The derivations among these with a build trace entry or a settled
      * resolution in this store.
      */
-    bool hasAnyRecordOf(const StorePathSet & drvPaths);
+    StorePathSet recordedOf(const StorePathSet & drvPaths);
+
+    /**
+     * Counts this process's writes of build trace entries and settled
+     * resolutions, so a reader can tell when an answer it kept is stale.
+     */
+    std::atomic<uint64_t> recordWrites = 0;
 
     /**
      * Mark `paths` transient, or note a use of those that already are.

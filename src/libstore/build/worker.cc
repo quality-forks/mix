@@ -54,6 +54,30 @@ bool Worker::remoteMachineFits(const std::string & system, const StringSet & fea
     });
 }
 
+bool Worker::anyRecorded(const StorePathSet & drvPaths)
+{
+    auto * localStore = dynamic_cast<LocalStore *>(&store);
+    if (!localStore)
+        return false;
+
+    if (auto writes = localStore->recordWrites.load(); writes != recordWritesSeen) {
+        knownRecorded.clear();
+        recordWritesSeen = writes;
+    }
+
+    StorePathSet unknown;
+    for (auto & drvPath : drvPaths)
+        if (auto known = knownRecorded.find(drvPath); known == knownRecorded.end())
+            unknown.insert(drvPath);
+        else if (known->second)
+            return true;
+
+    auto recorded = localStore->recordedOf(unknown);
+    for (auto & drvPath : unknown)
+        knownRecorded.insert_or_assign(drvPath, recorded.contains(drvPath));
+    return !recorded.empty();
+}
+
 Worker::~Worker()
 {
     /* Explicitly get rid of all strong pointers now.  After this all
