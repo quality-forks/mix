@@ -276,6 +276,34 @@ std::string hashPlaceholder(const OutputNameView outputName)
 
 namespace derivation {
 
+static nlohmann::json rewriteJsonStrings(const nlohmann::json & json, const StringMap & rewrites);
+
+static nlohmann::json::object_t rewriteJsonStrings(const nlohmann::json::object_t & object, const StringMap & rewrites)
+{
+    nlohmann::json::object_t rewritten;
+    for (const auto & [key, value] : object)
+        rewritten.insert_or_assign(rewriteStrings(key, rewrites), rewriteJsonStrings(value, rewrites));
+    return rewritten;
+}
+
+static nlohmann::json rewriteJsonStrings(const nlohmann::json & json, const StringMap & rewrites)
+{
+    if (json.is_string())
+        return rewriteStrings(json.get_ref<const std::string &>(), rewrites);
+
+    if (json.is_object())
+        return rewriteJsonStrings(json.get_ref<const nlohmann::json::object_t &>(), rewrites);
+
+    if (json.is_array()) {
+        auto rewritten = nlohmann::json::array();
+        for (const auto & element : json)
+            rewritten.push_back(rewriteJsonStrings(element, rewrites));
+        return rewritten;
+    }
+
+    return json;
+}
+
 template<typename Inputs, typename Out>
 void Derivation<Inputs, Out>::applyRewrites(const StringMap & rewrites)
 {
@@ -299,12 +327,22 @@ void Derivation<Inputs, Out>::applyRewrites(const StringMap & rewrites)
     }
     env = std::move(newEnv);
 
-    if (structuredAttrs) {
-        // TODO rewrite the JSON AST properly, rather than dump parse round trip.
-        auto [_, jsonS] = structuredAttrs->unparse();
-        jsonS = rewriteStrings(std::move(jsonS), rewrites);
-        structuredAttrs = StructuredAttrs::parse(jsonS);
-    }
+    if (!structuredAttrs)
+        return;
+
+    /* A `\u` escape can spell a rewritten string that the encoding does
+       not contain literally, so only then is the rewritten encoding parsed
+       again. */
+    const auto & attrs = *structuredAttrs;
+    if (attrs.verbatim && attrs.verbatim->contains("\\u"))
+        structuredAttrs = StructuredAttrs::parse(rewriteStrings(*attrs.verbatim, rewrites));
+    else
+        structuredAttrs = StructuredAttrs{
+            .structuredAttrs = rewriteJsonStrings(attrs.structuredAttrs, rewrites),
+            .verbatim = attrs.verbatim.transform([&](const std::string & encoded) {
+                return rewriteStrings(encoded, rewrites);
+            }),
+        };
 }
 
 bool hasDynamicDrvDep(const std::set<SingleDerivedPath> & inputs)
