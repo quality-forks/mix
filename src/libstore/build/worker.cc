@@ -43,6 +43,17 @@ Worker::Worker(Store & store, Store & evalStore)
     lastWokenUp = steady_time_point::min();
 }
 
+bool Worker::remoteMachineFits(const std::string & system, const StringSet & features)
+{
+    if (!remoteMachines)
+        remoteMachines = Machine::parseConfig({nix::settings.thisSystem}, settings.builders);
+
+    return std::ranges::any_of(*remoteMachines, [&](const Machine & machine) {
+        return machine.enabled && machine.systemSupported(system) && machine.allSupported(features)
+               && machine.mandatoryMet(features);
+    });
+}
+
 Worker::~Worker()
 {
     /* Explicitly get rid of all strong pointers now.  After this all

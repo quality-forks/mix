@@ -7,6 +7,7 @@
 #include "nix/store/derived-path-map.hh"
 #include "nix/store/build/goal.hh"
 #include "nix/store/build-result.hh"
+#include "nix/store/machines.hh"
 #include "nix/store/realisation.hh"
 #include "nix/util/muxable-pipe.hh"
 
@@ -163,6 +164,8 @@ private:
     std::map<DrvOutput, std::weak_ptr<DrvOutputSubstitutionGoal>> drvOutputSubstitutionGoals;
     std::map<SingleDerivedPath::Built, std::weak_ptr<BuildTraceLookupGoal>> buildTraceLookupGoals;
 
+    std::optional<Machines> remoteMachines;
+
     /**
      * Goals sleeping for a few seconds (polling a lock).
      */
@@ -287,6 +290,13 @@ public:
      * it answers with "decline-permanently", we don't try again.
      */
     bool tryBuildHook = true;
+
+    /**
+     * Whether a remote machine in `builders` could take a derivation for
+     * `system` needing `features`, which the build hook checks the same way
+     * before it looks for a free slot.
+     */
+    bool remoteMachineFits(const std::string & system, const StringSet & features);
 
     Worker(Store & store, Store & evalStore);
     ~Worker();

@@ -1387,6 +1387,11 @@ HookReply DerivationBuildingGoal::tryBuildHook(const DerivationOptions<StorePath
         || (&worker.evalStore != &worker.store && !worker.store.isValidPath(drvPath)))
         return rpDecline;
 
+    /* The hook declines what no machine fits, and asking it blocks the
+       worker for a round trip. */
+    if (!worker.remoteMachineFits(drv->platform, drvOptions.getRequiredSystemFeatures(*drv)))
+        return rpDecline;
+
     if (!worker.hook)
         worker.hook = std::make_unique<HookInstance>(
             worker.settings.buildHook, std::chrono::milliseconds(worker.settings.buildHookKillTimeout));
