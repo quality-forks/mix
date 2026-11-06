@@ -29,15 +29,14 @@ std::string BuildTraceLookupGoal::key()
     return "ab$" + std::string(req.getBaseStorePath().name()) + "$" + req.to_string(worker.store);
 }
 
-Goal::Co<Goal::ExitCode> BuildTraceLookupGoal::init(std::shared_ptr<const Derivation> drv)
+Goal::Co<Goal::ExitCode> BuildTraceLookupGoal::init(std::shared_ptr<const Derivation> knownDrv)
 {
     auto drvPath = co_await obtainDrvPath();
     if (!drvPath)
         co_return ecNoSubstituters;
     concreteDrvPath = *drvPath;
 
-    if (!drv)
-        drv = readLocalDerivation(*drvPath);
+    drv = knownDrv ? std::move(knownDrv) : readLocalDerivation(*drvPath);
 
     /* A planned build drops a derivation's file once it is built and keeps
        its build trace entry, whose output stands without the file. */

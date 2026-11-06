@@ -40,17 +40,18 @@ struct BuildTraceLookupGoal : public Goal
     std::shared_ptr<const BasicDerivation> resolvedDrv;
 
     /**
+     * The derivation `req` names, once its producers are looked up.
+     */
+    std::optional<StorePath> concreteDrvPath;
+    std::shared_ptr<const Derivation> drv;
+
+    /**
      * Record how the wanted output and the derivations producing it were
      * found, after its output path was substituted.
      */
     void registerBuildTrace();
 
 private:
-
-    /**
-     * The derivation `req` names once its producers are looked up.
-     */
-    std::optional<StorePath> concreteDrvPath;
 
     std::shared_ptr<BuildTraceLookupGoal> producerGoal;
 
@@ -60,7 +61,7 @@ private:
 
     SingleDerivedPath::Built req;
 
-    Co<ExitCode> init(std::shared_ptr<const Derivation> drv);
+    Co<ExitCode> init(std::shared_ptr<const Derivation> knownDrv);
     Co<std::optional<StorePath>> obtainDrvPath();
     std::shared_ptr<const Derivation> readLocalDerivation(const StorePath & drvPath);
     Co<std::shared_ptr<const Derivation>> readDerivation(const StorePath & drvPath);

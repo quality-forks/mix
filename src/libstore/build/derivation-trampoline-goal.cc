@@ -26,7 +26,7 @@ DerivationTrampolineGoal::DerivationTrampolineGoal(
     const Derivation & drv,
     Worker & worker,
     BuildMode buildMode)
-    : Goal(worker, init(haveDerivation(drvPath, drv)))
+    : Goal(worker, init(haveDerivation(drvPath, make_ref<const Derivation>(drv))))
     , drvReq(makeConstantStorePathRef(drvPath))
     , wantedOutputs(wantedOutputs)
     , buildMode(buildMode)
@@ -78,21 +78,23 @@ Goal::Co<Goal::ExitCode> DerivationTrampolineGoal::init(Co<Result> work)
 
 Goal::Co<DerivationTrampolineGoal::Result> DerivationTrampolineGoal::haveToLoadFromStore()
 {
-    if (auto substituted = co_await substituteFromBuildTrace())
+    std::optional<LoadedDerivation> lookedUp;
+    if (auto substituted = co_await substituteFromBuildTrace(lookedUp))
         co_return std::move(*substituted);
 
-    auto loadResult = co_await loadDerivation();
+    auto loadResult = co_await loadDerivation(std::move(lookedUp));
     if (auto * failure = std::get_if<BuildResult::Failure>(&loadResult))
         co_return Result{ecFailed, BuildResult{.inner = std::move(*failure)}};
 
-    auto [drvPath, drv] = std::get<LoadedDerivation>(std::move(loadResult));
+    auto & [drvPath, drv] = std::get<LoadedDerivation>(loadResult);
     co_return co_await haveDerivation(std::move(drvPath), std::move(drv));
 }
 
 /* Obtaining a dynamic derivation makes it valid along with every path it
    references, which for a planned build are all its tools and objects, so
    outputs found in the build trace are substituted without it. */
-Goal::Co<std::optional<DerivationTrampolineGoal::Result>> DerivationTrampolineGoal::substituteFromBuildTrace()
+Goal::Co<std::optional<DerivationTrampolineGoal::Result>>
+DerivationTrampolineGoal::substituteFromBuildTrace(std::optional<LoadedDerivation> & lookedUp)
 {
     auto * outputNames = std::get_if<OutputsSpec::Names>(&wantedOutputs.raw);
     if (buildMode != bmNormal || !outputNames || !std::holds_alternative<SingleDerivedPath::Built>(drvReq->raw())
@@ -108,6 +110,12 @@ Goal::Co<std::optional<DerivationTrampolineGoal::Result>> DerivationTrampolineGo
     }
 
     co_await await(std::move(waitees));
+
+    for (auto & [_, lookup] : lookups)
+        if (lookup->concreteDrvPath && lookup->drv) {
+            lookedUp.emplace(*lookup->concreteDrvPath, ref<const Derivation>(lookup->drv));
+            break;
+        }
 
     Goals substitutions;
     if (nrFailed == 0)
@@ -141,7 +149,8 @@ Goal::Co<std::optional<DerivationTrampolineGoal::Result>> DerivationTrampolineGo
     };
 }
 
-Goal::Co<DerivationTrampolineGoal::LoadResult> DerivationTrampolineGoal::loadDerivation()
+Goal::Co<DerivationTrampolineGoal::LoadResult>
+DerivationTrampolineGoal::loadDerivation(std::optional<LoadedDerivation> lookedUp)
 {
     trace("need to load derivation from file");
 
@@ -188,6 +197,9 @@ Goal::Co<DerivationTrampolineGoal::LoadResult> DerivationTrampolineGoal::loadDer
        things being garbage collected while we're busy. */
     worker.evalStore.addTempRoot(drvPath);
 
+    if (lookedUp && lookedUp->first == drvPath)
+        co_return std::move(*lookedUp);
+
     /* Get the derivation. It is probably in the eval store, but it might be in the main store:
 
          - Resolved derivation are resolved against main store realisations, and so must be stored there.
@@ -197,14 +209,15 @@ Goal::Co<DerivationTrampolineGoal::LoadResult> DerivationTrampolineGoal::loadDer
     auto drv = [&] {
         for (auto * drvStore : {&worker.evalStore, &worker.store})
             if (drvStore->isValidPath(drvPath))
-                return drvStore->readDerivation(drvPath);
+                return make_ref<const Derivation>(drvStore->readDerivation(drvPath));
         assert(false);
     }();
 
     co_return std::pair{std::move(drvPath), std::move(drv)};
 }
 
-Goal::Co<DerivationTrampolineGoal::Result> DerivationTrampolineGoal::haveDerivation(StorePath drvPath, Derivation drv)
+Goal::Co<DerivationTrampolineGoal::Result>
+DerivationTrampolineGoal::haveDerivation(StorePath drvPath, ref<const Derivation> drv)
 {
     trace("have derivation, will kick off derivations goals per wanted output");
 
@@ -213,7 +226,7 @@ Goal::Co<DerivationTrampolineGoal::Result> DerivationTrampolineGoal::haveDerivat
             [&](const OutputsSpec::Names & names) -> OutputsSpec::Names { return names; },
             [&](const OutputsSpec::All &) -> OutputsSpec::Names {
                 StringSet outputs;
-                for (auto & [outputName, _] : drv.outputs)
+                for (auto & [outputName, _] : drv->outputs)
                     outputs.insert(outputName);
                 return outputs;
             },
@@ -227,10 +240,8 @@ Goal::Co<DerivationTrampolineGoal::Result> DerivationTrampolineGoal::haveDerivat
 
     /* Build this step! */
 
-    auto sharedDrv = make_ref<const Derivation>(std::move(drv));
-
     for (auto & output : resolvedWantedOutputs) {
-        auto g = upcast_goal(worker.makeDerivationGoal(drvPath, sharedDrv, output, buildMode));
+        auto g = upcast_goal(worker.makeDerivationGoal(drvPath, drv, output, buildMode));
         g->preserveFailure = true;
         /* We will finish with it ourselves, as if we were the derivational goal. */
         concreteDrvGoals.insert(std::move(g));
