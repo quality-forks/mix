@@ -19,6 +19,8 @@ required:
   - passAsFile
   - exportReferencesGraph
   - hiddenInputs
+  - veneers
+  - writableVeneers
   - additionalSandboxProfile
   - noChroot
   - impureHostDeps
@@ -27,6 +29,7 @@ required:
   - requiredSystemFeatures
   - preferLocalBuild
   - allowSubstitutes
+  - transient
 properties:
   outputChecks:
     type: object
@@ -94,6 +97,22 @@ properties:
     items:
       "$ref": "deriving-path-v1.yaml"
 
+  veneers:
+    type: array
+    title: Veneers
+    description: |
+      Manifests of trees mounted read-only inside the sandbox, each at its own store path.
+    items:
+      "$ref": "deriving-path-v1.yaml"
+
+  writableVeneers:
+    type: object
+    title: Writable Veneers
+    description: |
+      Manifests of trees mounted writable inside the sandbox, by the directory of the build directory each is mounted on.
+    additionalProperties:
+      "$ref": "deriving-path-v1.yaml"
+
   additionalSandboxProfile:
     type: string
     title: Additional Sandbox Profile
@@ -147,6 +166,12 @@ properties:
     title: Allow Substitutes
     description: |
       Whether substituting from other stores should be allowed for this derivation's outputs.
+
+  transient:
+    type: boolean
+    title: Transient
+    description: |
+      Whether what the derivation makes, its outputs and what it adds to the store while building, is a cache the store evicts under `transient-store-size` rather than keeps for its roots.
 
 additionalProperties: false
 
