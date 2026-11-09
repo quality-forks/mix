@@ -345,7 +345,10 @@ std::optional<StorePath> deepQueryPartialDerivationOutput(
     Store * evalStore_,
     QueryRealisationFun queryRealisation)
 {
-    if (auto * daemon = resolvingDaemon(store, evalStore_, queryRealisation)) {
+    /* The daemon reads the derivation for its output map, but the build
+       trace still names an output of one evicted once built. */
+    auto * daemon = resolvingDaemon(store, evalStore_, queryRealisation);
+    if (daemon && daemon->isValidPath(drvPath)) {
         auto outputs = daemon->queryPartialDerivationOutputMap(drvPath);
         auto output = outputs.find(outputName);
         if (output == outputs.end())
