@@ -83,8 +83,20 @@ struct ExternalDerivationBuilder : UnixDerivationBuilderImpl
             auto l = nlohmann::json::array();
             auto add = [&](const StorePath & manifest, const std::filesystem::path & target, bool writable) {
                 auto references = topTmpDir / "veneers" / std::to_string(l.size());
+                /* The files of every layer below the manifest take bytes from
+                   what that layer refers to. */
+                auto & helper = store->getLocalSettings().veneerHelper.get();
+                if (!helper)
+                    throw Error(
+                        "'%s' mounts veneers, but 'veneer-helper' is not set", store->printStorePath(drvPath));
+                StorePathSet referenced;
+                auto layers = runProgram(*helper, false, {"veneer", "layers", store->toRealPath(manifest).native()});
+                for (auto & layer : tokenizeString<Strings>(layers, "\n"))
+                    for (auto & reference :
+                         store->queryReferences(StorePath(std::filesystem::path(layer).filename().string())))
+                        referenced.insert(reference);
                 std::string listed;
-                for (auto & reference : store->queryReferences(manifest))
+                for (auto & reference : referenced)
                     listed += store->printStorePath(reference) + "\n";
                 writeFile(references, listed);
                 l.push_back({

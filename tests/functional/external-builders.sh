@@ -49,13 +49,15 @@ nix build -L --file "$expr" --out-link "$TEST_ROOT/result" \
 
 [[ $(cat "$TEST_ROOT/result") = foobar ]]
 
+[[ -n ${_NIX_TEST_VENEER_HELPER-} ]] || skipTest "_NIX_TEST_VENEER_HELPER names no veneer helper"
+
 veneers_expr="$TEST_ROOT/veneers.nix"
 cat > "$veneers_expr" <<EOF
 with import ${config_nix};
 let
   data = builtins.toFile "data" "hello";
   manifest = builtins.toFile "listed.veneer" (builtins.toJSON {
-    a.file = {
+    paths.a.file = {
       inherit data;
       size = 5;
     };
@@ -87,5 +89,6 @@ EOF
 chmod +x "$veneers_builder"
 
 nix build --file "$veneers_expr" --no-link \
+  --option veneer-helper "$_NIX_TEST_VENEER_HELPER" \
   --extra-experimental-features external-builders \
   --external-builders "[{\"systems\": [\"x68_46-xunil\"], \"args\": [], \"program\": \"$veneers_builder\"}]"

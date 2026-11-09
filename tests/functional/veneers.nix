@@ -5,20 +5,20 @@ let
   blob = builtins.unsafeDiscardStringContext data;
   manifest = builtins.toFile "listed.veneer" (
     builtins.toJSON {
-      "a/b" = {
+      paths."a/b" = {
         file = {
           inherit data;
           size = 5;
         };
       };
-      "c" = "empty";
-      "x" = {
+      paths."c" = "empty";
+      paths."x" = {
         executable = {
           inherit data;
           size = 5;
         };
       };
-      "d" = {
+      paths."d" = {
         link = "a/b";
       };
     }
@@ -81,7 +81,7 @@ in
     __veneers = [
       (builtins.toFile "unreferenced.veneer" (
         builtins.toJSON {
-          a.file = {
+          paths.a.file = {
             data = blob;
             size = 5;
           };

@@ -46,7 +46,7 @@ struct ChrootLinuxDerivationBuilder : ChrootDerivationBuilder, LinuxDerivationBu
     {
         std::filesystem::path target;
         bool writable;
-        AutoCloseFD lock;
+        std::vector<AutoCloseFD> locks;
         AutoCloseFD mount;
     };
 

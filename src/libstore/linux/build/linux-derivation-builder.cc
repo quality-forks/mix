@@ -774,10 +774,16 @@ void ChrootLinuxDerivationBuilder::prepareSandbox()
 }
 
 /**
- * Runs `veneer-helper veneer build`, the path of the veneer it prints, or nothing
- * if it needs the manifest's references to write a veneer it does not hold.
+ * What `veneer-helper veneer build` printed: the metadata trees of a veneer's
+ * layers, top first, or the manifests of the layers it needs references for.
  */
-static std::optional<std::filesystem::path>
+struct BuiltVeneer
+{
+    bool built;
+    std::vector<std::filesystem::path> lines;
+};
+
+static BuiltVeneer
 buildVeneer(const std::filesystem::path & helper, const OsStrings & args, const std::optional<std::string> & references)
 {
     AutoCloseFD input = memfd_create("nix-veneer-references", MFD_CLOEXEC);
@@ -802,14 +808,19 @@ buildVeneer(const std::filesystem::path & helper, const OsStrings & args, const 
     auto printed = drainFD(output.readSide.get());
     auto status = pid.wait();
 
-    if (!references && WIFEXITED(status) && WEXITSTATUS(status) == 2)
-        return std::nullopt;
-    if (!statusOk(status)) {
-        if (lseek(errors.get(), 0, SEEK_SET) == -1)
-            throw SysError("rewinding the errors of the veneer helper");
-        throw Error("%s %s: %s", PathFmt(helper), statusToString(status), chomp(drainFD(errors.get())));
-    }
-    return chomp(printed);
+    bool lacking = !references && WIFEXITED(status) && WEXITSTATUS(status) == 2;
+    if (lseek(errors.get(), 0, SEEK_SET) == -1)
+        throw SysError("rewinding the errors of the veneer helper");
+    auto said = chomp(drainFD(errors.get()));
+    if (!lacking && !statusOk(status))
+        throw Error("%s %s: %s", PathFmt(helper), statusToString(status), said);
+    if (!said.empty())
+        warn("%s", said);
+
+    BuiltVeneer result{.built = !lacking};
+    for (auto & line : tokenizeString<Strings>(printed, "\n"))
+        result.lines.emplace_back(line);
+    return result;
 }
 
 /**
@@ -880,42 +891,58 @@ ChrootLinuxDerivationBuilder::Veneer ChrootLinuxDerivationBuilder::mountVeneer(
        for a source veneer are a store path for every file. */
     std::optional<std::string> references;
     auto build = [&] {
-        if (auto built = buildVeneer(*helper, args, references))
-            return *built;
+        auto tried = buildVeneer(*helper, args, references);
+        if (tried.built)
+            return tried.lines;
+        /* A layer's files take bytes from what it or a base below it refers
+           to, all of which the top manifest's closure holds. */
+        StorePathSet referenced;
+        for (auto & layer : tried.lines)
+            for (auto & reference : store->queryReferences(StorePath(layer.filename().string())))
+                referenced.insert(reference);
         references.emplace();
-        for (auto & reference : store->queryReferences(manifest))
+        for (auto & reference : referenced)
             *references += store->printStorePath(reference) + "\n";
         args.insert(std::prev(args.end()), "--references");
-        return buildVeneer(*helper, args, references).value();
+        return buildVeneer(*helper, args, references).lines;
     };
 
     /* Eviction may remove a veneer between the helper printing its path and
        the lock on it, after which the path names nothing. */
     Veneer veneer{.target = target, .writable = writable};
     try {
-        std::filesystem::path written;
-        for (int attempt = 0; !veneer.lock; ++attempt) {
+        std::vector<std::filesystem::path> trees;
+        auto lockAll = [&] {
+            veneer.locks.clear();
+            for (auto & tree : trees) {
+                AutoCloseFD lock = open(tree.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+                if (!lock) {
+                    if (errno != ENOENT)
+                        throw SysError("opening the veneer %s", PathFmt(tree));
+                    return false;
+                }
+                if (flock(lock.get(), LOCK_SH) == -1)
+                    throw SysError("locking the veneer %s", PathFmt(tree));
+                struct stat st;
+                if (stat(tree.c_str(), &st) == -1 || st.st_ino != nix::fstat(lock.get()).st_ino)
+                    return false;
+                veneer.locks.push_back(std::move(lock));
+            }
+            return true;
+        };
+        for (int attempt = 0;; ++attempt) {
             if (attempt == 3)
                 throw Error("the veneer was evicted while it was being mounted");
-            written = build();
-            veneer.lock = open(written.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-            if (!veneer.lock) {
-                if (errno != ENOENT)
-                    throw SysError("opening the veneer %s", PathFmt(written));
-                continue;
-            }
-            if (flock(veneer.lock.get(), LOCK_SH) == -1)
-                throw SysError("locking the veneer %s", PathFmt(written));
-            struct stat st;
-            if (stat(written.c_str(), &st) == -1 || st.st_ino != nix::fstat(veneer.lock.get()).st_ino)
-                veneer.lock.close();
+            trees = build();
+            if (lockAll())
+                break;
         }
 
-        std::vector<std::pair<const char *, std::string>> options{
-            {"lowerdir+", written.native()},
-            {"datadir+", store->getRealStoreDir().native()},
-            {"metacopy", "on"},
-        };
+        std::vector<std::pair<const char *, std::string>> options;
+        for (auto & tree : trees)
+            options.emplace_back("lowerdir+", tree.native());
+        options.emplace_back("datadir+", store->getRealStoreDir().native());
+        options.emplace_back("metacopy", "on");
         if (writable) {
             auto changes = topTmpDir / "veneers" / std::to_string(veneers.size());
             createDirs(changes / "upper");
