@@ -871,6 +871,8 @@ ChrootLinuxDerivationBuilder::Veneer ChrootLinuxDerivationBuilder::mountVeneer(
         store->storeDir,
         "--size",
         std::to_string(localSettings.veneerCacheSize.get()),
+        "--spill",
+        (topTmpDir / "veneer-trees" / std::to_string(veneers.size())).native(),
         store->toRealPath(manifest).native(),
     };
 
