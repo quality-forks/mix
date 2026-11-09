@@ -315,6 +315,10 @@ SingleDrvOutputs DerivationBuilderImpl::registerOutputs(LocalStore & localStore)
             continue;
         auto references = *referencesOpt;
 
+        bool scanned = true;
+        if (auto udr = get(drvOptions.unsafeDiscardReferences, outputName))
+            scanned = !*udr;
+
         auto rewriteOutput = [&](const StringMap & rewrites) {
             /* Apply hash rewriting if necessary. */
             if (!rewrites.empty()) {
@@ -391,14 +395,40 @@ SingleDrvOutputs DerivationBuilderImpl::registerOutputs(LocalStore & localStore)
                         "since recursive hashing is not enabled (one of outputHashMode={flat,text} is true)",
                         PathFmt(actualPath));
             }
-            rewriteOutput(outputRewrites);
+            /* The reference scan found every hash this output holds, so
+               only the outputs it refers to are rewritten, and an output
+               without its own hash is read once for both hashes. */
+            StringMap rewrites;
+            if (scanned) {
+                for (auto & r : references)
+                    if (auto to = get(outputRewrites, std::string{r.hashPart()}))
+                        rewrites.emplace(r.hashPart(), *to);
+            } else
+                rewrites = outputRewrites;
+            rewriteOutput(rewrites);
+            bool selfReferenced = !scanned || references.contains(*scratchPath);
             /* FIXME optimize and deduplicate with addToStore */
             std::string oldHashPart{scratchPath->hashPart()};
+            std::optional<HashResult> narHashAndSize;
             auto got = [&] {
                 auto fim = outputHash.method.getFileIngestionMethod();
                 switch (fim) {
-                case FileIngestionMethod::Flat:
-                case FileIngestionMethod::NixArchive: {
+                case FileIngestionMethod::NixArchive:
+                    if (!selfReferenced) {
+                        SourcePath path{makeFSSourceAccessor(actualPath), CanonPath::root};
+                        if (outputHash.hashAlgo == HashAlgorithm::SHA256) {
+                            narHashAndSize = hashPath(path, FileSerialisationMethod::NixArchive, HashAlgorithm::SHA256);
+                            return narHashAndSize->hash;
+                        }
+                        HashSink caSink{outputHash.hashAlgo};
+                        HashSink narSink{HashAlgorithm::SHA256};
+                        TeeSink both{caSink, narSink};
+                        dumpPath(path, both, FileSerialisationMethod::NixArchive);
+                        narHashAndSize = narSink.finish();
+                        return caSink.finish().hash;
+                    }
+                    [[fallthrough]];
+                case FileIngestionMethod::Flat: {
                     MaskedHashSink caSink{outputHash.hashAlgo, oldHashPart};
                     auto fim = outputHash.method.getFileIngestionMethod();
                     dumpPath(
@@ -417,7 +447,7 @@ SingleDrvOutputs DerivationBuilderImpl::registerOutputs(LocalStore & localStore)
                 outputPathName(drv.name, outputName),
                 ContentAddressWithReferences::fromParts(outputHash.method, std::move(got), rewriteRefs()),
                 Hash::dummy);
-            if (*scratchPath != newInfo0.path) {
+            if (*scratchPath != newInfo0.path && selfReferenced) {
                 // If the path has some self-references, we need to rewrite
                 // them.
                 // (note that this doesn't invalidate the ca hash we calculated
@@ -426,14 +456,13 @@ SingleDrvOutputs DerivationBuilderImpl::registerOutputs(LocalStore & localStore)
                 rewriteOutput(StringMap{{oldHashPart, std::string(newInfo0.path.hashPart())}});
             }
 
-            {
-                HashResult narHashAndSize = hashPath(
+            if (!narHashAndSize)
+                narHashAndSize = hashPath(
                     {makeFSSourceAccessor(actualPath), CanonPath::root},
                     FileSerialisationMethod::NixArchive,
                     HashAlgorithm::SHA256);
-                newInfo0.narHash = narHashAndSize.hash;
-                newInfo0.narSize = narHashAndSize.numBytesDigested;
-            }
+            newInfo0.narHash = narHashAndSize->hash;
+            newInfo0.narSize = narHashAndSize->numBytesDigested;
 
             assert(newInfo0.ca);
             return newInfo0;
