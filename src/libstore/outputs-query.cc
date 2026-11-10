@@ -21,6 +21,7 @@ struct Resolved
 {
     StorePath path;
     std::vector<std::string> outputs;
+    bool kept = false;
 };
 
 /**
@@ -36,10 +37,10 @@ using ResolveCache = boost::unordered_flat_map<StorePath, Resolved>;
 using RealisationCache = boost::unordered_flat_map<DrvOutput, std::optional<StorePath>>;
 
 /**
- * Resolutions that found every input realised, per store. A realisation
- * never changes once recorded, so these hold for the life of the process,
- * while a worker resolves each dynamic derivation's whole input chain
- * again for every goal that loads it.
+ * Resolutions that found every input realised, per store, since a worker
+ * resolves each dynamic derivation's whole input chain again for every
+ * goal that loads it. Garbage collection forgets the build trace of an
+ * output it deletes, so a lookup that misses through one resolves afresh.
  */
 Sync<boost::unordered_flat_map<std::string, ResolveCache>> settled;
 
@@ -85,6 +86,13 @@ static std::optional<StorePath> deepQueryPartialDerivationOutputImpl(
 static std::optional<StorePath> resolveDerivationPath(
     Store & store,
     const SingleDerivedPath & drvPath,
+    Store * evalStore_,
+    QueryRealisationFun & queryRealisation,
+    Caches & caches);
+
+static Resolved resolveAfresh(
+    Store & store,
+    const StorePath & drvPath,
     Store * evalStore_,
     QueryRealisationFun & queryRealisation,
     Caches & caches);
@@ -160,15 +168,27 @@ static Resolved resolveDerivation(
         auto settled_(settled.lock());
         if (auto known = settled_->find(*caches.store); known != settled_->end())
             if (auto it = known->second.find(drvPath); it != known->second.end())
-                return caches.resolved.emplace(drvPath, it->second).first->second;
+                return caches.resolved.emplace(drvPath, Resolved{it->second.path, it->second.outputs, true})
+                    .first->second;
     }
     if (localStore)
         if (auto kept = localStore->querySettledResolution(drvPath)) {
-            Resolved result{std::move(kept->path), std::move(kept->outputs)};
+            Resolved result{std::move(kept->path), std::move(kept->outputs), true};
             (*settled.lock())[*caches.store].emplace(drvPath, result);
             return caches.resolved.emplace(drvPath, std::move(result)).first->second;
         }
 
+    return caches.resolved.emplace(drvPath, resolveAfresh(store, drvPath, evalStore_, queryRealisation, caches))
+        .first->second;
+}
+
+static Resolved resolveAfresh(
+    Store & store,
+    const StorePath & drvPath,
+    Store * evalStore_,
+    QueryRealisationFun & queryRealisation,
+    Caches & caches)
+{
     auto & evalStore = evalStore_ ? *evalStore_ : store;
 
     Derivation drv = evalStore.readInvalidDerivation(drvPath);
@@ -199,12 +219,21 @@ static Resolved resolveDerivation(
     Resolved result{computeStorePath(store, drv), {}};
     for (auto & [outputName, _] : drv.outputs)
         result.outputs.push_back(outputName);
-    if (complete && caches.store) {
-        (*settled.lock())[*caches.store].emplace(drvPath, result);
-        if (localStore)
-            localStore->registerSettledResolution(drvPath, {result.path, result.outputs});
-    }
-    return caches.resolved.emplace(drvPath, std::move(result)).first->second;
+    if (!complete || !caches.store)
+        return result;
+
+    bool changed = [&] {
+        auto settled_(settled.lock());
+        auto & known = (*settled_)[*caches.store];
+        auto it = known.find(drvPath);
+        if (it != known.end() && it->second.path == result.path)
+            return false;
+        known.insert_or_assign(drvPath, result);
+        return true;
+    }();
+    if (auto * localStore = dynamic_cast<LocalStore *>(&store); changed && localStore)
+        localStore->registerSettledResolution(drvPath, {result.path, result.outputs});
+    return result;
 }
 
 void queryPartialDerivationOutputMapCA(
@@ -274,15 +303,23 @@ static std::optional<StorePath> deepQueryPartialDerivationOutputImpl(
     if (std::ranges::find(resolved.outputs, outputName) == resolved.outputs.end())
         throw Error("derivation '%s' does not have an output named '%s'", store.printStorePath(drvPath), outputName);
 
-    DrvOutput id{resolved.path, outputName};
-    auto it = caches.realisations.find(id);
-    if (it != caches.realisations.end())
-        return it->second;
+    auto query = [&](const StorePath & resolvedPath) {
+        DrvOutput id{resolvedPath, outputName};
+        if (auto it = caches.realisations.find(id); it != caches.realisations.end())
+            return it->second;
+        auto realisation = queryRealisation(id);
+        std::optional<StorePath> outPath = realisation ? std::optional{realisation->outPath} : std::nullopt;
+        caches.realisations.emplace(id, outPath);
+        return outPath;
+    };
 
-    auto realisation = queryRealisation(id);
-    std::optional<StorePath> outPath = realisation ? std::optional{realisation->outPath} : std::nullopt;
-    caches.realisations.emplace(id, outPath);
-    return outPath;
+    auto outPath = query(resolved.path);
+    if (outPath || !resolved.kept)
+        return outPath;
+
+    auto fresh = resolveAfresh(store, drvPath, evalStore_, queryRealisation, caches);
+    caches.resolved.insert_or_assign(drvPath, fresh);
+    return fresh.path == resolved.path ? outPath : query(fresh.path);
 }
 
 } // namespace
@@ -319,10 +356,18 @@ std::map<std::string, std::optional<StorePath>> deepQueryPartialDerivationOutput
         return outputs;
 
     auto resolved = resolveDerivation(store, drvPath, evalStore_, queryRealisation, caches);
+    auto staticOutputs = outputs;
     queryPartialDerivationOutputMapCA(
         store, resolved.path, resolved.outputs, outputs, queryRealisation, caches.realisations);
+    if (!resolved.kept || std::ranges::all_of(outputs, [](auto & output) { return output.second.has_value(); }))
+        return outputs;
 
-    return outputs;
+    auto fresh = resolveAfresh(store, drvPath, evalStore_, queryRealisation, caches);
+    if (fresh.path == resolved.path)
+        return outputs;
+    queryPartialDerivationOutputMapCA(
+        store, fresh.path, fresh.outputs, staticOutputs, queryRealisation, caches.realisations);
+    return staticOutputs;
 }
 
 OutputPathMap deepQueryDerivationOutputMap(

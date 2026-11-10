@@ -452,7 +452,7 @@ LocalStore::LocalStore(ref<const Config> config)
         if (!config->readOnly) {
             state->stmts->RegisterSettledResolution.create(
                 state->db,
-                "insert or ignore into SettledResolutions (drvPath, resolvedPath, outputs) values (?, ?, ?);");
+                "insert or replace into SettledResolutions (drvPath, resolvedPath, outputs) values (?, ?, ?);");
             state->stmts->QuerySettledResolution.create(
                 state->db, "select resolvedPath, outputs from SettledResolutions where drvPath = ?;");
             state->stmts->ClearSettledResolutions.create(state->db, "delete from SettledResolutions;");
