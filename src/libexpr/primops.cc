@@ -4904,8 +4904,11 @@ struct RegexCache
     {
         ref<const std::regex> regex;
 
+        // libc++ rejects an empty POSIX pattern, which libstdc++ takes as
+        // matching the empty string, as an empty ECMAScript one does
         Entry(const char * s, size_t count)
-            : regex(make_ref<const std::regex>(s, count, std::regex::extended))
+            : regex(make_ref<const std::regex>(
+                  s, count, count == 0 ? std::regex::ECMAScript : std::regex::extended))
         {
         }
     };
