@@ -162,7 +162,7 @@ static void prim_fromTOML(EvalState & state, CallSite callSite, Value * const * 
                 "fromTOML" /* the "filename" */
 #if HAVE_TOML11_4
                 ,
-                toml::spec::v(1, 0, 0) // Be explicit that we are parsing TOML 1.0.0 without extensions
+                toml::spec::v(1, 1, 0) // TOML 1.1.0 without extensions
 #endif
                 ));
     } catch (std::exception & e) { // TODO: toml::syntax_error
