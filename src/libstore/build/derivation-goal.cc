@@ -479,6 +479,10 @@ std::optional<std::pair<UnkeyedRealisation, PathStatus>> DerivationGoal::checkPa
 
     if (mRealisation) {
         auto & outputPath = mRealisation->outPath;
+        /* A floating output has no path for `haveDerivation` to root, and
+           transient eviction would otherwise delete it before a dependent
+           mounts it. */
+        worker.store.addTempRoot(outputPath);
         bool checkHash = buildMode == bmRepair;
         PathStatus status = !worker.store.isValidPath(outputPath)               ? PathStatus::Absent
                             : !checkHash || worker.pathContentsGood(outputPath) ? PathStatus::Valid
