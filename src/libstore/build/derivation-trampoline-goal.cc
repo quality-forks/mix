@@ -262,6 +262,26 @@ Goal::Co<DerivationTrampolineGoal::LoadResult> DerivationTrampolineGoal::loadDer
     if (lookedUp && lookedUp->first == drvPath)
         co_return std::move(*lookedUp);
 
+    auto haveDrv = [&] { return worker.evalStore.isValidPath(drvPath) || worker.store.isValidPath(drvPath); };
+
+    /* Eviction drops a transient derivation unused for ten minutes, which
+       can land between obtaining it above and rooting it, so a built one is
+       obtained once more now that it is rooted. */
+    if (!haveDrv() && std::holds_alternative<SingleDerivedPath::Built>(drvReq->raw())) {
+        Goals waitees{obtainGoal(std::nullopt)};
+        co_await await(std::move(waitees));
+        if (nrFailed == 0) {
+            drvPath = resolveDerivedPath(worker.store, *drvReq);
+            worker.evalStore.addTempRoot(drvPath);
+        }
+    }
+
+    if (nrFailed != 0 || !haveDrv())
+        co_return BuildResult::Failure{{
+            .status = BuildResult::Failure::DependencyFailed,
+            .msg = HintFmt("failed to obtain derivation of '%s'", drvReq->to_string(worker.store)),
+        }};
+
     /* Get the derivation. It is probably in the eval store, but it might be in the main store:
 
          - Resolved derivation are resolved against main store realisations, and so must be stored there.
