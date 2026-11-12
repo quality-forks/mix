@@ -1141,17 +1141,31 @@ Goal::Co<DerivationBuildingGoal::LocalBuildOutcome> DerivationBuildingGoal::buil
         worker.childStarted(shared_from_this(), {}, true, false);
         Finally releaseSlot([&] { worker.childTerminated(this, JobCategory::Build); });
         std::jthread starting;
-        co_await AsyncCallback<std::monostate>{[&](Callback<std::monostate> callback) {
-            starting = std::jthread([callback = std::move(callback), builder = builder.get()]() mutable {
-                try {
-                    ReceiveInterrupts receiveInterrupts;
-                    builder->awaitSetup();
-                    callback(std::monostate{});
-                } catch (...) {
-                    callback.rethrow();
-                }
-            });
-        }};
+        try {
+            co_await AsyncCallback<std::monostate>{[&](Callback<std::monostate> callback) {
+                starting = std::jthread([callback = std::move(callback), builder = builder.get()]() mutable {
+                    try {
+                        ReceiveInterrupts receiveInterrupts;
+                        builder->awaitSetup();
+                        callback(std::monostate{});
+                    } catch (...) {
+                        callback.rethrow();
+                    }
+                });
+            }};
+        } catch (BuildError &) {
+            throw;
+        } catch (Error & e) {
+            builder->killChild();
+            builder->cleanupBuild(false);
+            builder.reset();
+            outputLocks.unlock();
+            co_return BuildError(
+                BuildResult::Failure::TransientFailure,
+                "while starting the sandbox of '%s': %s",
+                worker.store.printStorePath(drvPath),
+                e.msg());
+        }
     }
 
     worker.childStarted(shared_from_this(), {builder->logChannel()}, true, true);
