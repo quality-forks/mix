@@ -131,7 +131,27 @@ static BackedStringView parseString(StringViewStream & str)
         return (char) ch;
     };
 
-    std::string res;
+    /* Everything up to the next character that has an escape, which
+       includes the closing quote and the backslash. A unit derivation's
+       environment runs to megabytes with few escapes, and copying it
+       one character at a time dominated reading it. */
+    const auto plain = [&]() -> std::string_view {
+        auto & rest = str.remaining;
+        size_t end = 0;
+        while (end < rest.size() && !unescapes.lookup(rest[end]).has_value())
+            ++end;
+        auto run = rest.substr(0, end);
+        rest.remove_prefix(end);
+        return run;
+    };
+
+    auto run = plain();
+    if (str.peek() == '"') {
+        str.get();
+        return run;
+    }
+
+    std::string res{run};
 
     while (true) {
         auto ch = next();
@@ -144,12 +164,11 @@ static BackedStringView parseString(StringViewStream & str)
                 throw FormatError("unknown escape '\\%1%'", ch);
             }
             res.push_back(escaped.value());
-        } else if (unescapes.lookup(ch).has_value()) {
+        } else {
             // Characters that can be escaped must be escaped
             throw FormatError("invalid character in string");
-        } else {
-            res.push_back(ch);
         }
+        res.append(plain());
     }
 }
 
