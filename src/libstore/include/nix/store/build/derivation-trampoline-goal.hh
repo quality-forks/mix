@@ -128,6 +128,7 @@ private:
     GoalPtr obtainGoal(std::optional<LoadedDerivation> producer);
     Co<std::optional<Result>>
     substituteFromBuildTrace(std::optional<LoadedDerivation> & lookedUp, std::optional<LoadedDerivation> & producer);
+    Co<bool> realiseProducerInputs(const std::optional<LoadedDerivation> & producer);
     Co<Result> haveDerivation(StorePath drvPath, ref<const Derivation> drv);
 
     BuildMode buildMode;

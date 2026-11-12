@@ -2,25 +2,30 @@ with import ./config.nix;
 
 let
   # Writes the derivation of `drv` without referencing it, so GC can delete it alone
-  detachedProducer =
-    drv:
+  detachedProducer = detachedProducerWith { };
+
+  detachedProducerWith =
+    extra: drv:
     let
       outPlaceholder = builtins.placeholder "out";
       outTail = builtins.substring 1 (-1) outPlaceholder;
     in
-    mkDerivation {
-      inherit outTail;
-      name = "${drv.name}.drv";
-      drvText = builtins.replaceStrings [ outPlaceholder ] [ "%${outTail}" ] (
-        builtins.readFile drv.drvPath
-      );
-      buildCommand = ''
-        printf '%s' "''${drvText//"%$outTail"/"/$outTail"}" > $out
-      '';
-      __contentAddressed = true;
-      outputHashMode = "text";
-      outputHashAlgo = "sha256";
-    };
+    mkDerivation (
+      {
+        inherit outTail;
+        name = "${drv.name}.drv";
+        drvText = builtins.replaceStrings [ outPlaceholder ] [ "%${outTail}" ] (
+          builtins.readFile drv.drvPath
+        );
+        buildCommand = ''
+          printf '%s' "''${drvText//"%$outTail"/"/$outTail"}" > $out
+        '';
+        __contentAddressed = true;
+        outputHashMode = "text";
+        outputHashAlgo = "sha256";
+      }
+      // extra
+    );
 in
 
 # A simple content-addressing derivation.
@@ -49,6 +54,43 @@ rec {
   };
 
   detachedProducingDrv = detachedProducer hello;
+
+  caHello = mkDerivation {
+    name = "ca-hello";
+    buildCommand = ''
+      mkdir -p $out
+      echo "Hello World" > $out/hello
+    '';
+    __contentAddressed = true;
+    outputHashMode = "recursive";
+    outputHashAlgo = "sha256";
+  };
+
+  # An input every seed rebuilds into the same output
+  stableInput =
+    seed:
+    mkDerivation {
+      name = "stable-input";
+      inherit seed;
+      buildCommand = "echo stable > $out";
+      __contentAddressed = true;
+      outputHashMode = "recursive";
+      outputHashAlgo = "sha256";
+    };
+
+  seededProducer = seed: detachedProducerWith { input = stableInput seed; } caHello;
+
+  seededWrapper =
+    seed:
+    mkDerivation {
+      name = "use-seeded-dynamic-drv";
+      buildCommand = ''
+        cp -r ${builtins.outputOf (seededProducer seed).outPath "out"} $out
+      '';
+      __contentAddressed = true;
+      outputHashMode = "recursive";
+      outputHashAlgo = "sha256";
+    };
 
   detachedProducingProducingDrv = detachedProducer detachedProducingDrv;
 

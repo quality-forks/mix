@@ -82,6 +82,13 @@ Goal::Co<DerivationTrampolineGoal::Result> DerivationTrampolineGoal::haveToLoadF
     if (auto substituted = co_await substituteFromBuildTrace(lookedUp, producer))
         co_return std::move(*substituted);
 
+    if (co_await realiseProducerInputs(producer)) {
+        lookedUp.reset();
+        producer.reset();
+        if (auto substituted = co_await substituteFromBuildTrace(lookedUp, producer))
+            co_return std::move(*substituted);
+    }
+
     auto loadResult = co_await loadDerivation(std::move(lookedUp), std::move(producer));
     if (auto * failure = std::get_if<BuildResult::Failure>(&loadResult))
         co_return Result{ecFailed, BuildResult{.inner = std::move(*failure)}};
@@ -148,6 +155,45 @@ Goal::Co<std::optional<DerivationTrampolineGoal::Result>> DerivationTrampolineGo
                 },
         },
     };
+}
+
+/* A producer whose inputs were rebuilt into the same outputs resolves as
+   before, but the lookup finds that only once the inputs have build trace
+   entries of their own. Realising them first lets the producer's entry stand
+   for a produced derivation that was evicted, which obtaining it would
+   otherwise write again by running the producer. */
+Goal::Co<bool> DerivationTrampolineGoal::realiseProducerInputs(const std::optional<LoadedDerivation> & producer)
+{
+    auto * built = std::get_if<SingleDerivedPath::Built>(&drvReq->raw());
+    auto * base = built ? std::get_if<SingleDerivedPath::Opaque>(&built->drvPath->raw()) : nullptr;
+    if (buildMode != bmNormal || !base || !producer || producer->first != base->path)
+        co_return false;
+
+    try {
+        auto produced = resolveDerivedPath(worker.store, *drvReq);
+        if (worker.evalStore.isValidPath(produced) || worker.store.isValidPath(produced))
+            co_return false;
+    } catch (MissingRealisation &) {
+    }
+
+    Goals waitees;
+    for (auto & input : producer->second->inputs)
+        if (std::holds_alternative<SingleDerivedPath::Built>(input.raw()))
+            waitees.insert(worker.makeGoal(DerivedPath::fromSingle(input)));
+    if (waitees.empty())
+        co_return false;
+
+    co_await await(std::move(waitees));
+    if (nrFailed != 0) {
+        nrFailed = nrNoSubstituters = 0;
+        co_return false;
+    }
+
+    worker.buildTraceMisses.erase(*built);
+    if (auto * outputNames = std::get_if<OutputsSpec::Names>(&wantedOutputs.raw))
+        for (auto & output : *outputNames)
+            worker.buildTraceMisses.erase(SingleDerivedPath::Built{drvReq, output});
+    co_return true;
 }
 
 /* The lookup that found no build trace entry already parsed the derivation
