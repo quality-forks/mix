@@ -142,6 +142,8 @@ Goal::Co<std::optional<DerivationTrampolineGoal::Result>> DerivationTrampolineGo
     SingleDrvOutputs outputs;
     for (auto & [output, lookup] : lookups) {
         lookup->registerBuildTrace();
+        if (lookup->outputInfo->outPath.isDerivation())
+            worker.store.addTempRoot(lookup->outputInfo->outPath);
         outputs.insert_or_assign(output, *lookup->outputInfo);
     }
 

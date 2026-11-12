@@ -524,6 +524,12 @@ BuildResult DerivationGoal::success(BuildResult::Success::Status status, Unkeyed
     if (status == BuildResult::Success::Built)
         worker.doneBuilds++;
 
+    /* Eviction drops a produced derivation unused for ten minutes, while
+       this goal stays done for the rest of the session and a consumer may
+       only come to load it later. */
+    if (builtOutput.outPath.isDerivation())
+        worker.store.addTempRoot(builtOutput.outPath);
+
     worker.updateProgress();
 
     return BuildResult{
