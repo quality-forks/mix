@@ -281,17 +281,21 @@ static std::optional<StorePath> deepQueryPartialDerivationOutputImpl(
 {
     auto & evalStore = evalStore_ ? *evalStore_ : store;
 
+    auto valid = [&](const StorePath & path) { return evalStore.isValidPath(path) || store.isValidPath(path); };
+
     /* A build trace entry outlives a derivation evicted once built, and
-       names its output without it. */
-    if (experimentalFeatureSettings.isEnabled(Xp::CaDerivations) && !evalStore.isValidPath(drvPath)
-        && !store.isValidPath(drvPath)) {
-        if (auto realisation = queryRealisation({drvPath, outputName}))
-            return realisation->outPath;
+       names its output without it. The derived entry keeps the first
+       resolution's output, so a later one that settled differently wins
+       once that output is gone. */
+    if (experimentalFeatureSettings.isEnabled(Xp::CaDerivations) && !valid(drvPath)) {
+        auto derived = queryRealisation({drvPath, outputName});
+        if (derived && valid(derived->outPath))
+            return derived->outPath;
         if (auto * localStore = caches.store ? dynamic_cast<LocalStore *>(&store) : nullptr)
             if (auto kept = localStore->querySettledResolution(drvPath))
                 if (auto realisation = queryRealisation({kept->path, outputName}))
                     return realisation->outPath;
-        return std::nullopt;
+        return derived ? std::optional{derived->outPath} : std::nullopt;
     }
 
     auto staticResult = evalStore.queryStaticPartialDerivationOutput(drvPath, outputName);
@@ -313,8 +317,11 @@ static std::optional<StorePath> deepQueryPartialDerivationOutputImpl(
         return outPath;
     };
 
+    /* Another goal of this process may have settled a different
+       resolution since this one was kept, so a kept one whose output is
+       gone is resolved afresh. */
     auto outPath = query(resolved.path);
-    if (outPath || !resolved.kept)
+    if ((outPath && valid(*outPath)) || !resolved.kept)
         return outPath;
 
     auto fresh = resolveAfresh(store, drvPath, evalStore_, queryRealisation, caches);
@@ -359,7 +366,10 @@ std::map<std::string, std::optional<StorePath>> deepQueryPartialDerivationOutput
     auto staticOutputs = outputs;
     queryPartialDerivationOutputMapCA(
         store, resolved.path, resolved.outputs, outputs, queryRealisation, caches.realisations);
-    if (!resolved.kept || std::ranges::all_of(outputs, [](auto & output) { return output.second.has_value(); }))
+    auto valid = [&](const std::optional<StorePath> & path) {
+        return path && (evalStore.isValidPath(*path) || store.isValidPath(*path));
+    };
+    if (!resolved.kept || std::ranges::all_of(outputs, [&](auto & output) { return valid(output.second); }))
         return outputs;
 
     auto fresh = resolveAfresh(store, drvPath, evalStore_, queryRealisation, caches);
