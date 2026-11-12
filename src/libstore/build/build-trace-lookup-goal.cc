@@ -36,16 +36,18 @@ Goal::Co<Goal::ExitCode> BuildTraceLookupGoal::init(std::shared_ptr<const Deriva
         co_return ecNoSubstituters;
     concreteDrvPath = *drvPath;
 
-    drv = knownDrv ? std::move(knownDrv) : readLocalDerivation(*drvPath);
-
-    /* A planned build drops a derivation's file once it is built and keeps
-       its build trace entry, whose output stands without the file. */
-    if (!drv)
+    /* A build trace entry's output stands without the derivation, which a
+       planned build drops once built and whose unit derivations run to
+       megabytes. Parsing one for every lookup kept the worker's goal thread
+       too busy to start builds. Impure derivations get no entry. */
+    if (!knownDrv)
         if (auto local = queryLocalTrace(*drvPath)) {
             traceKey = local->id;
             outputInfo = std::make_shared<const UnkeyedRealisation>(std::move(*local));
             co_return ecSuccess;
         }
+
+    drv = knownDrv ? std::move(knownDrv) : readLocalDerivation(*drvPath);
 
     if (!drv)
         drv = co_await readDerivation(*drvPath);
