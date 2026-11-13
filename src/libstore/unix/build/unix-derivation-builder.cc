@@ -395,8 +395,7 @@ std::optional<Descriptor> UnixDerivationBuilderImpl::startBuild()
 
     buildResult.startTime = time(nullptr);
 
-    /* Start a child process to build the derivation. */
-    startChild();
+    prepareChild();
 
     return builderOut.get();
 }

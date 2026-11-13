@@ -74,6 +74,15 @@ struct ChrootLinuxDerivationBuilder : ChrootDerivationBuilder, LinuxDerivationBu
 
     Veneer mountVeneer(const StorePath & manifest, const std::filesystem::path & target, bool writable);
 
+    /**
+     * What `prepareChild` hands the helper.
+     */
+    AutoCloseFD specFile;
+    AutoCloseFD slave;
+    AutoCloseFD cgroupFd;
+
+    void prepareChild() override;
+
     void startChild() override;
 
     void awaitSetup() override;

@@ -1119,9 +1119,27 @@ Goal::Co<DerivationBuildingGoal::LocalBuildOutcome> DerivationBuildingGoal::buil
                             );
         }
 
+        /* Preparing the sandbox walks the input closure and writes its
+           spec, which kept the worker thread from forwarding any build's
+           log for seconds at a time. */
         std::optional<Descriptor> started;
         try {
-            started = builder->startBuild();
+            worker.childStarted(shared_from_this(), {}, true, false);
+            Finally releaseSlot([&] { worker.childTerminated(this, JobCategory::Build); });
+            std::jthread preparing;
+            started = co_await AsyncCallback<std::optional<Descriptor>>{
+                [&](Callback<std::optional<Descriptor>> callback) {
+                    preparing = std::jthread([callback = std::move(callback), builder = builder.get()]() mutable {
+                        try {
+                            ReceiveInterrupts receiveInterrupts;
+                            callback(builder->startBuild());
+                        } catch (...) {
+                            callback.rethrow();
+                        }
+                    });
+                }};
+            if (started)
+                builder->startChild();
         } catch (BuildError &) {
             throw;
         } catch (Error & e) {

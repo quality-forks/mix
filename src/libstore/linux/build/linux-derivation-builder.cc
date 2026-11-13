@@ -970,7 +970,7 @@ ChrootLinuxDerivationBuilder::Veneer ChrootLinuxDerivationBuilder::mountVeneer(
     return veneer;
 }
 
-void ChrootLinuxDerivationBuilder::startChild()
+void ChrootLinuxDerivationBuilder::prepareChild()
 {
     /* Set up private namespaces for the build:
 
@@ -1014,7 +1014,6 @@ void ChrootLinuxDerivationBuilder::startChild()
 
     sendPid.create();
 
-    AutoCloseFD cgroupFd;
     if (cgroup) {
         cgroupFd = open(cgroup->c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
         if (!cgroupFd)
@@ -1079,7 +1078,7 @@ void ChrootLinuxDerivationBuilder::startChild()
             spec.env.push_back(rewrites(name + "=" + value));
     }
 
-    AutoCloseFD specFile = memfd_create("nix-sandbox-spec", MFD_CLOEXEC);
+    specFile = memfd_create("nix-sandbox-spec", MFD_CLOEXEC);
     if (!specFile)
         throw SysError("creating the sandbox spec");
     writeFull(specFile.get(), toJson(spec).dump());
@@ -1089,7 +1088,11 @@ void ChrootLinuxDerivationBuilder::startChild()
     /* We need to open the slave early, before
        CLONE_NEWUSER. Otherwise we get EPERM when running as
        root. */
-    auto slave = openRawSlave();
+    slave = openRawSlave();
+}
+
+void ChrootLinuxDerivationBuilder::startChild()
+{
     std::vector<FdRedirection> fds{
         {slave.get(), STDERR_FILENO},
         {specFile.get(), specFd},
@@ -1110,6 +1113,9 @@ void ChrootLinuxDerivationBuilder::startChild()
         fds);
 
     sendPid.writeSide.close();
+    specFile.close();
+    slave.close();
+    cgroupFd.close();
 }
 
 void ChrootLinuxDerivationBuilder::awaitSetup()

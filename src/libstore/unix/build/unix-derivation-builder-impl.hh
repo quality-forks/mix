@@ -234,7 +234,13 @@ protected:
      * build. Must set `pid`, or leave it to `awaitSetup`. The child must
      * call runChild().
      */
-    virtual void startChild();
+    void startChild() override;
+
+    /**
+     * The part of starting the child that need not run on the worker
+     * thread, called at the end of `startBuild`.
+     */
+    virtual void prepareChild() {}
 
 #if NIX_WITH_AWS_AUTH
     /**

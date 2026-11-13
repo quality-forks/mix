@@ -254,6 +254,13 @@ public:
     virtual std::optional<Descriptor> startBuild() = 0;
 
     /**
+     * Start the builder in the environment `startBuild` set up. The
+     * builder's parent-death signal fires when the thread that spawned
+     * it exits, so this runs on the worker thread.
+     */
+    virtual void startChild() = 0;
+
+    /**
      * Wait until the builder `startBuild` started has set up its sandbox,
      * which takes long enough that this may run off the worker thread.
      */
