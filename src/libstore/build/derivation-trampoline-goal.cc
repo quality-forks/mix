@@ -1,12 +1,17 @@
+#include "goal-impl.hh"
+
 #include "nix/store/build/derivation-trampoline-goal.hh"
 #include "nix/store/build/build-trace-lookup-goal.hh"
 #include "nix/store/build/substitution-goal.hh"
 #include "nix/store/build/worker.hh"
 #include "nix/store/derivations.hh"
 #include "nix/store/worker-settings.hh"
+#include "nix/util/callback.hh"
+#include "nix/util/signals.hh"
 
 #include <ranges>
 #include <algorithm>
+#include <thread>
 
 namespace nix {
 
@@ -171,12 +176,9 @@ Goal::Co<bool> DerivationTrampolineGoal::realiseProducerInputs(const std::option
     if (buildMode != bmNormal || !base || !producer || producer->first != base->path)
         co_return false;
 
-    try {
-        auto produced = resolveDerivedPath(worker.store, *drvReq);
-        if (worker.evalStore.isValidPath(produced) || worker.store.isValidPath(produced))
-            co_return false;
-    } catch (MissingRealisation &) {
-    }
+    if (auto produced = co_await resolveDrvPath();
+        produced && (worker.evalStore.isValidPath(*produced) || worker.store.isValidPath(*produced)))
+        co_return false;
 
     Goals waitees;
     for (auto & input : producer->second->inputs)
@@ -196,6 +198,30 @@ Goal::Co<bool> DerivationTrampolineGoal::realiseProducerInputs(const std::option
         for (auto & output : *outputNames)
             worker.buildTraceMisses.erase(SingleDerivedPath::Built{drvReq, output});
     co_return true;
+}
+
+/* Resolving a produced derivation walks its producer's inputs through the
+   store database, which kept the worker thread from forwarding build logs.
+   An exception leaving a goal coroutine fails the goal instead of reaching
+   the awaiting one, so a missing realisation comes back as no path. */
+Goal::Co<std::optional<StorePath>> DerivationTrampolineGoal::resolveDrvPath()
+{
+    std::jthread resolving;
+    co_return co_await AsyncCallback<std::optional<StorePath>>{[&](Callback<std::optional<StorePath>> callback) {
+        resolving = std::jthread([&, callback = std::move(callback)]() mutable {
+            try {
+                ReceiveInterrupts receiveInterrupts;
+                std::optional<StorePath> drvPath;
+                try {
+                    drvPath = resolveDerivedPath(worker.store, *drvReq);
+                } catch (MissingRealisation &) {
+                }
+                callback(std::move(drvPath));
+            } catch (...) {
+                callback.rethrow();
+            }
+        });
+    }};
 }
 
 /* The lookup that found no build trace entry already parsed the derivation
@@ -222,19 +248,13 @@ Goal::Co<DerivationTrampolineGoal::LoadResult> DerivationTrampolineGoal::loadDer
        exists.  If it doesn't, it may be built from another derivation,
        or merely substituted. We can make goal to get it and not worry
        about which method it takes to get the derivation. */
-    if (auto optDrvPath = [this]() -> std::optional<StorePath> {
-            if (buildMode != bmNormal)
-                return std::nullopt;
+    std::optional<StorePath> optDrvPath;
+    if (buildMode == bmNormal)
+        if (auto drvPath = co_await resolveDrvPath();
+            drvPath && (worker.evalStore.isValidPath(*drvPath) || worker.store.isValidPath(*drvPath)))
+            optDrvPath = drvPath;
 
-            auto drvPath = StorePath::dummy;
-            try {
-                drvPath = resolveDerivedPath(worker.store, *drvReq);
-            } catch (MissingRealisation &) {
-                return std::nullopt;
-            }
-            auto cond = worker.evalStore.isValidPath(drvPath) || worker.store.isValidPath(drvPath);
-            return cond ? std::optional{drvPath} : std::nullopt;
-        }()) {
+    if (optDrvPath) {
         trace(
             fmt("already have drv '%s' for '%s', can go straight to building",
                 worker.store.printStorePath(*optDrvPath),
@@ -254,7 +274,8 @@ Goal::Co<DerivationTrampolineGoal::LoadResult> DerivationTrampolineGoal::loadDer
         }};
     }
 
-    StorePath drvPath = resolveDerivedPath(worker.store, *drvReq);
+    auto resolved = co_await resolveDrvPath();
+    StorePath drvPath = resolved ? *resolved : resolveDerivedPath(worker.store, *drvReq);
 
     /* `drvPath' should already be a root, but let's be on the safe
        side: if the user forgot to make it a root, we wouldn't want
@@ -273,7 +294,8 @@ Goal::Co<DerivationTrampolineGoal::LoadResult> DerivationTrampolineGoal::loadDer
         Goals waitees{obtainGoal(std::nullopt)};
         co_await await(std::move(waitees));
         if (nrFailed == 0) {
-            drvPath = resolveDerivedPath(worker.store, *drvReq);
+            auto again = co_await resolveDrvPath();
+            drvPath = again ? *again : resolveDerivedPath(worker.store, *drvReq);
             worker.evalStore.addTempRoot(drvPath);
         }
     }

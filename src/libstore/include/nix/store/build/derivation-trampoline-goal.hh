@@ -129,6 +129,7 @@ private:
     Co<std::optional<Result>>
     substituteFromBuildTrace(std::optional<LoadedDerivation> & lookedUp, std::optional<LoadedDerivation> & producer);
     Co<bool> realiseProducerInputs(const std::optional<LoadedDerivation> & producer);
+    Co<std::optional<StorePath>> resolveDrvPath();
     Co<Result> haveDerivation(StorePath drvPath, ref<const Derivation> drv);
 
     BuildMode buildMode;
