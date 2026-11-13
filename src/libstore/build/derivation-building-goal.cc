@@ -1119,7 +1119,24 @@ Goal::Co<DerivationBuildingGoal::LocalBuildOutcome> DerivationBuildingGoal::buil
                             );
         }
 
-        if (!builder->startBuild()) {
+        std::optional<Descriptor> started;
+        try {
+            started = builder->startBuild();
+        } catch (BuildError &) {
+            throw;
+        } catch (Error & e) {
+            builder->killChild();
+            builder->cleanupBuild(false);
+            builder.reset();
+            outputLocks.unlock();
+            co_return BuildError(
+                BuildResult::Failure::TransientFailure,
+                "while preparing the sandbox of '%s': %s",
+                worker.store.printStorePath(drvPath),
+                e.msg());
+        }
+
+        if (!started) {
             if (!actLock)
                 actLock = std::make_unique<Activity>(
                     *logger,
