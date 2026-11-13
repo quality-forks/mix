@@ -122,14 +122,12 @@ std::string replaceStrings(std::string res, std::string_view from, std::string_v
     return res;
 }
 
-std::string
-rewriteStrings(std::string s, const StringMap & rewrites, std::set<uint64_t> * matches, uint64_t offsetShift)
+StringRewriter::StringRewriter(const StringMap & rewrites)
 {
-    std::string firsts;
-    std::vector<size_t> lengths;
     for (auto & [from, to] : rewrites) {
         if (from.empty() || from == to)
             continue;
+        targets.emplace(from, &to);
         if (firsts.find(from[0]) == firsts.npos)
             firsts += from[0];
         if (std::ranges::find(lengths, from.size()) == lengths.end())
@@ -137,7 +135,10 @@ rewriteStrings(std::string s, const StringMap & rewrites, std::set<uint64_t> * m
     }
 
     std::ranges::sort(lengths, std::greater{});
+}
 
+std::string StringRewriter::operator()(std::string s, std::set<uint64_t> * matches, uint64_t offsetShift) const
+{
     std::string res;
     size_t done = 0;
 
@@ -148,9 +149,8 @@ rewriteStrings(std::string s, const StringMap & rewrites, std::set<uint64_t> * m
         for (auto length : lengths) {
             if (length > s.size() - pos)
                 continue;
-            auto i = rewrites.find(std::string_view(s).substr(pos, length));
-            if (i != rewrites.end() && i->first != i->second) {
-                to = &i->second;
+            if (auto i = targets.find(std::string_view(s).substr(pos, length)); i != targets.end()) {
+                to = i->second;
                 len = length;
                 break;
             }
@@ -173,6 +173,12 @@ rewriteStrings(std::string s, const StringMap & rewrites, std::set<uint64_t> * m
         return s;
     res.append(s, done);
     return res;
+}
+
+std::string
+rewriteStrings(std::string s, const StringMap & rewrites, std::set<uint64_t> * matches, uint64_t offsetShift)
+{
+    return StringRewriter(rewrites)(std::move(s), matches, offsetShift);
 }
 
 template<std::integral N>

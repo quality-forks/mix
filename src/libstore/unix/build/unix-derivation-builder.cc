@@ -623,8 +623,9 @@ void UnixDerivationBuilderImpl::initEnv()
     }
 
     /* Add extra files, similar to `finalEnv` */
+    StringRewriter rewrites(inputRewrites);
     for (const auto & [fileName, value] : desugaredEnv.extraFiles) {
-        writeBuilderFile(fileName, rewriteStrings(value, inputRewrites));
+        writeBuilderFile(fileName, rewrites(value));
     }
 
     /* For convenience, set an environment pointing to the top build
@@ -947,15 +948,16 @@ void UnixDerivationBuilderImpl::runChild(RunChildArgs args)
 
         /* It's not a builtin builder, so execute the program. */
 
+        StringRewriter rewrites(inputRewrites);
         Strings args;
         args.push_back(std::string(baseNameOf(drv.builder)));
 
         for (auto & i : drv.args)
-            args.push_back(rewriteStrings(i, inputRewrites));
+            args.push_back(rewrites(i));
 
         Strings envStrs;
         for (auto & i : env)
-            envStrs.push_back(rewriteStrings(i.first + "=" + i.second, inputRewrites));
+            envStrs.push_back(rewrites(i.first + "=" + i.second));
 
         execBuilder(args, envStrs);
 

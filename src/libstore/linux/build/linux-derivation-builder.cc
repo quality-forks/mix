@@ -1071,11 +1071,12 @@ void ChrootLinuxDerivationBuilder::startChild()
         for (auto & [name, _] : drv.outputs)
             builtin.outputs.emplace(name, store->printStorePath(scratchOutputs.at(name)));
     } else {
+        StringRewriter rewrites(inputRewrites);
         spec.args.push_back(std::string(baseNameOf(drv.builder)));
         for (auto & arg : drv.args)
-            spec.args.push_back(rewriteStrings(arg, inputRewrites));
+            spec.args.push_back(rewrites(arg));
         for (auto & [name, value] : env)
-            spec.env.push_back(rewriteStrings(name + "=" + value, inputRewrites));
+            spec.env.push_back(rewrites(name + "=" + value));
     }
 
     AutoCloseFD specFile = memfd_create("nix-sandbox-spec", MFD_CLOEXEC);

@@ -6,6 +6,8 @@
 #include "nix/util/logging.hh"
 #include "nix/util/strings.hh"
 
+#include <boost/unordered/unordered_flat_map.hpp>
+
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -84,6 +86,26 @@ std::string trim(std::string_view s, std::string_view whitespace = " \n\r\t");
  * Replace all occurrences of a string inside another string.
  */
 std::string replaceStrings(std::string s, std::string_view from, std::string_view to);
+
+/**
+ * Replaces all occurrences of the keys of a `StringMap` with their values, for many strings. It refers to the map,
+ * which must outlive it.
+ */
+class StringRewriter
+{
+public:
+    explicit StringRewriter(const StringMap & rewrites);
+
+    /**
+     * Optionally returns the positions of the matches in `matches`.
+     */
+    std::string operator()(std::string s, std::set<uint64_t> * matches = nullptr, uint64_t offsetShift = 0) const;
+
+private:
+    boost::unordered_flat_map<std::string_view, const std::string *> targets;
+    std::string firsts;
+    std::vector<size_t> lengths;
+};
 
 /**
  * Replace all occurrences of the keys in `rewrites` with their corresponding values. Optionally returns the positions

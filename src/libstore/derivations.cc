@@ -276,20 +276,21 @@ std::string hashPlaceholder(const OutputNameView outputName)
 
 namespace derivation {
 
-static nlohmann::json rewriteJsonStrings(const nlohmann::json & json, const StringMap & rewrites);
+static nlohmann::json rewriteJsonStrings(const nlohmann::json & json, const StringRewriter & rewrites);
 
-static nlohmann::json::object_t rewriteJsonStrings(const nlohmann::json::object_t & object, const StringMap & rewrites)
+static nlohmann::json::object_t
+rewriteJsonStrings(const nlohmann::json::object_t & object, const StringRewriter & rewrites)
 {
     nlohmann::json::object_t rewritten;
     for (const auto & [key, value] : object)
-        rewritten.insert_or_assign(rewriteStrings(key, rewrites), rewriteJsonStrings(value, rewrites));
+        rewritten.insert_or_assign(rewrites(key), rewriteJsonStrings(value, rewrites));
     return rewritten;
 }
 
-static nlohmann::json rewriteJsonStrings(const nlohmann::json & json, const StringMap & rewrites)
+static nlohmann::json rewriteJsonStrings(const nlohmann::json & json, const StringRewriter & rewrites)
 {
     if (json.is_string())
-        return rewriteStrings(json.get_ref<const std::string &>(), rewrites);
+        return rewrites(json.get_ref<const std::string &>());
 
     if (json.is_object())
         return rewriteJsonStrings(json.get_ref<const nlohmann::json::object_t &>(), rewrites);
@@ -305,24 +306,25 @@ static nlohmann::json rewriteJsonStrings(const nlohmann::json & json, const Stri
 }
 
 template<typename Inputs, typename Out>
-void Derivation<Inputs, Out>::applyRewrites(const StringMap & rewrites)
+void Derivation<Inputs, Out>::applyRewrites(const StringMap & rewriteMap)
 {
-    if (rewrites.empty())
+    if (rewriteMap.empty())
         return;
 
     debug("rewriting the derivation");
 
-    for (auto & rewrite : rewrites)
+    for (auto & rewrite : rewriteMap)
         debug("rewriting %s as %s", rewrite.first, rewrite.second);
 
-    builder = rewriteStrings(builder, rewrites);
+    StringRewriter rewrites(rewriteMap);
+    builder = rewrites(builder);
     for (auto & arg : args)
-        arg = rewriteStrings(arg, rewrites);
+        arg = rewrites(arg);
 
     StringPairs newEnv;
     for (auto & envVar : env) {
-        auto envName = rewriteStrings(envVar.first, rewrites);
-        auto envValue = rewriteStrings(envVar.second, rewrites);
+        auto envName = rewrites(envVar.first);
+        auto envValue = rewrites(envVar.second);
         newEnv.emplace(envName, envValue);
     }
     env = std::move(newEnv);
@@ -335,12 +337,12 @@ void Derivation<Inputs, Out>::applyRewrites(const StringMap & rewrites)
        again. */
     const auto & attrs = *structuredAttrs;
     if (attrs.verbatim && attrs.verbatim->contains("\\u"))
-        structuredAttrs = StructuredAttrs::parse(rewriteStrings(*attrs.verbatim, rewrites));
+        structuredAttrs = StructuredAttrs::parse(rewrites(*attrs.verbatim));
     else
         structuredAttrs = StructuredAttrs{
             .structuredAttrs = rewriteJsonStrings(attrs.structuredAttrs, rewrites),
             .verbatim = attrs.verbatim.transform([&](const std::string & encoded) {
-                return rewriteStrings(encoded, rewrites);
+                return rewrites(encoded);
             }),
         };
 }

@@ -42,16 +42,17 @@ struct ExternalDerivationBuilder : UnixDerivationBuilderImpl
 
         json.emplace("version", 1);
         json.emplace("builder", drv.builder);
+        StringRewriter rewrites(inputRewrites);
         {
             auto l = nlohmann::json::array();
             for (auto & i : drv.args)
-                l.push_back(rewriteStrings(i, inputRewrites));
+                l.push_back(rewrites(i));
             json.emplace("args", std::move(l));
         }
         {
             auto j = nlohmann::json::object();
             for (auto & [name, value] : env)
-                j.emplace(name, rewriteStrings(value, inputRewrites));
+                j.emplace(name, rewrites(value));
             json.emplace("env", std::move(j));
         }
         json.emplace("topTmpDir", topTmpDir.native());
