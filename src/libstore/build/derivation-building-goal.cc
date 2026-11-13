@@ -1059,17 +1059,29 @@ Goal::Co<DerivationBuildingGoal::LocalBuildOutcome> DerivationBuildingGoal::buil
                 /* Remote builders get the whole input closure as
                    `inputs`, so the hidden closure is subtracted from
                    the roots rather than just the hidden inputs. */
-                StorePathSet hiddenClosure;
-                worker.store.computeFSClosureWithLeaves(drvOptions.hiddenInputs, hiddenClosure, manifests);
-                StorePathSet visibleInputs;
-                for (auto & i : drv->inputs)
-                    if (!hiddenClosure.contains(i))
-                        visibleInputs.insert(i);
-                StorePathSet visiblePaths;
-                worker.store.computeFSClosureWithLeaves(visibleInputs, visiblePaths, manifests);
-                for (auto & i : hiddenClosure)
-                    if (!visiblePaths.contains(i))
-                        hiddenInputPaths.insert(i);
+                std::jthread walking;
+                hiddenInputPaths = co_await AsyncCallback<StorePathSet>{[&](Callback<StorePathSet> callback) {
+                    walking = std::jthread([&, callback = std::move(callback)]() mutable {
+                        try {
+                            ReceiveInterrupts receiveInterrupts;
+                            StorePathSet hiddenClosure;
+                            worker.store.computeFSClosureWithLeaves(drvOptions.hiddenInputs, hiddenClosure, manifests);
+                            StorePathSet visibleInputs;
+                            for (auto & i : drv->inputs)
+                                if (!hiddenClosure.contains(i))
+                                    visibleInputs.insert(i);
+                            StorePathSet visiblePaths;
+                            worker.store.computeFSClosureWithLeaves(visibleInputs, visiblePaths, manifests);
+                            StorePathSet paths = manifests;
+                            for (auto & i : hiddenClosure)
+                                if (!visiblePaths.contains(i))
+                                    paths.insert(i);
+                            callback(std::move(paths));
+                        } catch (...) {
+                            callback.rethrow();
+                        }
+                    });
+                }};
             }
 
             try {
