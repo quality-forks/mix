@@ -13,6 +13,7 @@
 #include <chrono>
 #include <future>
 #include <string>
+#include <boost/unordered/unordered_flat_map.hpp>
 #include <boost/unordered/unordered_flat_set.hpp>
 
 namespace nix {
@@ -246,6 +247,11 @@ private:
         std::chrono::time_point<std::chrono::steady_clock> lastEvictionCheck;
         bool evicting = false;
         std::thread evictionThread;
+
+        /**
+         * When `touchTransient` last wrote each path's use to the database.
+         */
+        boost::unordered_flat_map<StorePath, time_t, std::hash<StorePath>> transientTouches;
 
         std::unique_ptr<PublicKeys> publicKeys;
     };

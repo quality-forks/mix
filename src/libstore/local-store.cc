@@ -897,9 +897,32 @@ void LocalStore::touchTransient(const StorePathSet & paths)
 {
     if (config->readOnly || paths.empty())
         return;
+
+    /* Eviction orders by the use only roughly, and a unit's inputs are
+       thousands of paths its siblings just touched, so writing each use
+       took a sixth of the goal thread during a units build. */
+    constexpr time_t interval = 60;
+    auto now = time(nullptr);
+    StorePathSet stale;
+    {
+        auto state(_state->lock());
+        auto & touches = state->transientTouches;
+        if (touches.size() > (1 << 20))
+            boost::unordered::erase_if(touches, [&](auto & touch) { return now - touch.second >= interval; });
+        for (auto & path : paths) {
+            auto [touch, fresh] = touches.try_emplace(path, now);
+            if (!fresh && now - touch->second < interval)
+                continue;
+            touch->second = now;
+            stale.insert(path);
+        }
+    }
+    if (stale.empty())
+        return;
+
     retrySQLite<void>([&]() {
         auto state(_state->lock());
-        state->stmts->TouchTransient.use().apply(pathsJson(*this, paths)).apply(time(nullptr)).exec();
+        state->stmts->TouchTransient.use().apply(pathsJson(*this, stale)).apply(now).exec();
     });
 }
 
