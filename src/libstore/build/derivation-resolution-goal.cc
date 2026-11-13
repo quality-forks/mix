@@ -1,11 +1,16 @@
+#include "goal-impl.hh"
+
 #include "nix/store/build/derivation-resolution-goal.hh"
 #include "nix/store/build/worker.hh"
+#include "nix/util/callback.hh"
+#include "nix/util/signals.hh"
 #include "nix/util/util.hh"
 #include "nix/store/derivation/resolution.hh"
 
 #include <nlohmann/json.hpp>
 
 #include <array>
+#include <thread>
 
 namespace nix {
 
@@ -86,40 +91,57 @@ DerivationResolutionGoal::resolveDerivation(const Derivation & drv, const Inputs
        now-known results of dependencies. If so, we become a
        stub goal aliasing that resolved derivation goal. */
 
-    auto attempt = tryResolve(
-        drv,
-        worker.store,
-        [&](ref<const SingleDerivedPath> inputDrvPath, const std::string & outputName) -> std::optional<StorePath> {
-            auto inputDrvRef = make_ref<SingleDerivedPath>(SingleDerivedPath::Built{inputDrvPath, outputName});
-            auto mEntry = get(inputGoals, inputDrvRef);
-            if (!mEntry)
-                return std::nullopt;
-            auto & buildResult = (*mEntry)->buildResult;
-            return std::visit(
-                overloaded{
-                    [](const BuildResult::Failure &) -> std::optional<StorePath> { return std::nullopt; },
-                    [&](const BuildResult::Success & success) -> std::optional<StorePath> {
-                        auto i = get(success.builtOutputs, outputName);
-                        if (i)
-                            return i->outPath;
-                        return std::nullopt;
-                    },
-                },
-                buildResult.inner);
-        });
-
-    if (!attempt) {
-        /* TODO (impure derivations-induced tech debt) (see below):
-           The above attempt should have found it, but because we manage
-           inputDrvOutputs statefully, sometimes it gets out of sync with
-           the real source of truth (store). So we query the store
-           directly if there's a problem. */
-        attempt = tryResolve(drv, worker.store, &worker.evalStore);
+    /* Resolving rewrites the derivation's structured attrs and hashes the
+       result, which for a unit derivation held the goal thread for a fifth
+       of a units build, so it runs on a thread from what the inputs built. */
+    std::map<SingleDerivedPath::Built, StorePath> built;
+    for (auto & [input, goal] : inputGoals) {
+        auto * edge = std::get_if<SingleDerivedPath::Built>(&input->raw());
+        auto * success = goal->buildResult.tryGetSuccess();
+        if (!edge || !success)
+            continue;
+        if (auto * output = get(success->builtOutputs, edge->output))
+            built.insert_or_assign(*edge, output->outPath);
     }
 
-    assert(attempt);
+    std::jthread resolving;
+    auto resolved = co_await AsyncCallback<std::shared_ptr<std::pair<StorePath, BasicDerivation>>>{
+        [&](Callback<std::shared_ptr<std::pair<StorePath, BasicDerivation>>> callback) {
+            resolving = std::jthread([callback = std::move(callback),
+                                      &drv,
+                                      &built,
+                                      &store = worker.store,
+                                      &evalStore = worker.evalStore]() mutable {
+                try {
+                    ReceiveInterrupts receiveInterrupts;
+                    auto attempt = tryResolve(
+                        drv,
+                        store,
+                        [&](ref<const SingleDerivedPath> inputDrvPath,
+                            const std::string & outputName) -> std::optional<StorePath> {
+                            if (auto * path = get(built, SingleDerivedPath::Built{inputDrvPath, outputName}))
+                                return *path;
+                            return std::nullopt;
+                        });
 
-    auto pathResolved = computeStorePath(worker.store, unresolve(*attempt));
+                    /* TODO (impure derivations-induced tech debt) (see below):
+                       The above attempt should have found it, but because we manage
+                       inputDrvOutputs statefully, sometimes it gets out of sync with
+                       the real source of truth (store). So we query the store
+                       directly if there's a problem. */
+                    if (!attempt)
+                        attempt = tryResolve(drv, store, &evalStore);
+                    assert(attempt);
+
+                    auto path = computeStorePath(store, unresolve(*attempt));
+                    callback(std::make_shared<std::pair<StorePath, BasicDerivation>>(
+                        std::move(path), std::move(*attempt)));
+                } catch (...) {
+                    callback.rethrow();
+                }
+            });
+        }};
+    auto & pathResolved = resolved->first;
 
     Activity act(
         *logger,
@@ -133,7 +155,7 @@ DerivationResolutionGoal::resolveDerivation(const Derivation & drv, const Inputs
             worker.store.printStorePath(pathResolved),
         }));
 
-    co_return std::make_unique<std::pair<StorePath, BasicDerivation>>(std::move(pathResolved), std::move(*attempt));
+    co_return std::make_unique<std::pair<StorePath, BasicDerivation>>(std::move(*resolved));
 }
 
 Goal::Co<Goal::ExitCode> DerivationResolutionGoal::init(ref<const Derivation> drv, BuildMode buildMode)
