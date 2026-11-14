@@ -1,7 +1,8 @@
 #pragma once
 ///@file
 
-#include <functional>
+#include <boost/compat/move_only_function.hpp>
+
 #include <memory>
 
 namespace nix {
@@ -27,7 +28,7 @@ class HelperTask
 
 public:
     HelperTask() = default;
-    explicit HelperTask(std::move_only_function<void()> work);
+    explicit HelperTask(boost::compat::move_only_function<void()> work);
     HelperTask(HelperTask &&) = default;
     HelperTask & operator=(HelperTask && other) noexcept;
     ~HelperTask();

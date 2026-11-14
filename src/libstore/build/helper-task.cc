@@ -9,7 +9,7 @@ namespace nix {
 
 struct HelperTaskState
 {
-    std::move_only_function<void()> work;
+    boost::compat::move_only_function<void()> work;
     std::mutex lock;
     std::condition_variable finished;
     bool done = false;
@@ -84,7 +84,7 @@ HelperThreads & helperThreads = *new HelperThreads;
 
 } // namespace
 
-HelperTask::HelperTask(std::move_only_function<void()> work)
+HelperTask::HelperTask(boost::compat::move_only_function<void()> work)
     : state(std::make_shared<HelperTaskState>())
 {
     state->work = std::move(work);
