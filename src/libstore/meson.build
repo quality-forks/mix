@@ -271,6 +271,7 @@ sources = files(
   'build/drv-output-substitution-goal.cc',
   'build/entry-points.cc',
   'build/goal.cc',
+  'build/helper-task.cc',
   'build/substitution-goal.cc',
   'build/worker.cc',
   'builtins/buildenv.cc',

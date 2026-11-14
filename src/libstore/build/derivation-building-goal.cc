@@ -10,6 +10,7 @@
 #include "nix/util/processes.hh"
 #include "nix/util/environment-variables.hh"
 #include "nix/util/config-global.hh"
+#include "nix/store/build/helper-task.hh"
 #include "nix/store/build/worker.hh"
 #include "nix/util/util.hh"
 #include "nix/util/compression.hh"
@@ -27,7 +28,6 @@
 #include <chrono>
 #include <algorithm>
 #include <array>
-#include <thread>
 
 #include <sys/types.h>
 #include <fcntl.h>
@@ -309,10 +309,10 @@ Goal::Co<void> DerivationBuildingGoal::realiseInputs()
     /* Each validity check is a database lookup, which would hold up every other goal. */
     StorePathSet missing;
     {
-        std::jthread checking;
+        HelperTask checking;
         missing = co_await AsyncCallback<StorePathSet>{[&](Callback<StorePathSet> callback) {
-            checking = std::jthread(
-                [callback = std::move(callback), &store = worker.store, &inputs = drv->inputs]() mutable {
+            checking =
+                HelperTask([callback = std::move(callback), &store = worker.store, &inputs = drv->inputs]() mutable {
                     try {
                         ReceiveInterrupts receiveInterrupts;
                         StorePathSet invalid;
@@ -393,9 +393,9 @@ Goal::Co<DerivationBuildingGoal::Result> DerivationBuildingGoal::tryToBuild()
        which a valid manifest keeps valid, so the closure stops at it. */
     StorePathSet inputPaths;
     {
-        std::jthread closing;
+        HelperTask closing;
         inputPaths = co_await AsyncCallback<StorePathSet>{[&](Callback<StorePathSet> callback) {
-            closing = std::jthread(
+            closing = HelperTask(
                 [callback = std::move(callback), &store = worker.store, &inputs = drv->inputs, &manifests]() mutable {
                     try {
                         ReceiveInterrupts receiveInterrupts;
@@ -1059,9 +1059,9 @@ Goal::Co<DerivationBuildingGoal::LocalBuildOutcome> DerivationBuildingGoal::buil
                 /* Remote builders get the whole input closure as
                    `inputs`, so the hidden closure is subtracted from
                    the roots rather than just the hidden inputs. */
-                std::jthread walking;
+                HelperTask walking;
                 hiddenInputPaths = co_await AsyncCallback<StorePathSet>{[&](Callback<StorePathSet> callback) {
-                    walking = std::jthread([&, callback = std::move(callback)]() mutable {
+                    walking = HelperTask([&, callback = std::move(callback)]() mutable {
                         try {
                             ReceiveInterrupts receiveInterrupts;
                             StorePathSet hiddenClosure;
@@ -1138,10 +1138,10 @@ Goal::Co<DerivationBuildingGoal::LocalBuildOutcome> DerivationBuildingGoal::buil
         try {
             worker.childStarted(shared_from_this(), {}, true, false);
             Finally releaseSlot([&] { worker.childTerminated(this, JobCategory::Build); });
-            std::jthread preparing;
-            started = co_await AsyncCallback<std::optional<Descriptor>>{
-                [&](Callback<std::optional<Descriptor>> callback) {
-                    preparing = std::jthread([callback = std::move(callback), builder = builder.get()]() mutable {
+            HelperTask preparing;
+            started =
+                co_await AsyncCallback<std::optional<Descriptor>>{[&](Callback<std::optional<Descriptor>> callback) {
+                    preparing = HelperTask([callback = std::move(callback), builder = builder.get()]() mutable {
                         try {
                             ReceiveInterrupts receiveInterrupts;
                             callback(builder->startBuild());
@@ -1187,10 +1187,10 @@ Goal::Co<DerivationBuildingGoal::LocalBuildOutcome> DerivationBuildingGoal::buil
            mounts, so it runs on a thread while this goal holds its build slot. */
         worker.childStarted(shared_from_this(), {}, true, false);
         Finally releaseSlot([&] { worker.childTerminated(this, JobCategory::Build); });
-        std::jthread starting;
+        HelperTask starting;
         try {
             co_await AsyncCallback<std::monostate>{[&](Callback<std::monostate> callback) {
-                starting = std::jthread([callback = std::move(callback), builder = builder.get()]() mutable {
+                starting = HelperTask([callback = std::move(callback), builder = builder.get()]() mutable {
                     try {
                         ReceiveInterrupts receiveInterrupts;
                         builder->awaitSetup();
@@ -1265,14 +1265,14 @@ Goal::Co<DerivationBuildingGoal::LocalBuildOutcome> DerivationBuildingGoal::buil
     SingleDrvOutputs builtOutputs;
     /* Registering reads each output several times and cleanup deletes the
        build directory, so both run here, joined before `builder` dies. */
-    std::jthread registration;
+    HelperTask registration;
     try {
         bool submitted = drvOptions.getRequiredSystemFeatures(*drv).count(std::string{drvFeatureBuilderRpcV0});
         builtOutputs = co_await AsyncCallback<SingleDrvOutputs>{[&](Callback<SingleDrvOutputs> callback) {
-            registration = std::jthread([callback = std::move(callback),
-                                         builder = builder.get(),
-                                         &localStore = localBuildCap.localStore,
-                                         submitted]() mutable {
+            registration = HelperTask([callback = std::move(callback),
+                                       builder = builder.get(),
+                                       &localStore = localBuildCap.localStore,
+                                       submitted]() mutable {
                 try {
                     ReceiveInterrupts receiveInterrupts;
                     /* Compute the FS closure of the outputs and register them as

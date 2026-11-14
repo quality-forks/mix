@@ -3,6 +3,7 @@
 #include "nix/store/build/derivation-trampoline-goal.hh"
 #include "nix/store/build/build-trace-lookup-goal.hh"
 #include "nix/store/build/substitution-goal.hh"
+#include "nix/store/build/helper-task.hh"
 #include "nix/store/build/worker.hh"
 #include "nix/store/derivations.hh"
 #include "nix/store/worker-settings.hh"
@@ -11,7 +12,6 @@
 
 #include <ranges>
 #include <algorithm>
-#include <thread>
 
 namespace nix {
 
@@ -206,9 +206,9 @@ Goal::Co<bool> DerivationTrampolineGoal::realiseProducerInputs(const std::option
    the awaiting one, so a missing realisation comes back as no path. */
 Goal::Co<std::optional<StorePath>> DerivationTrampolineGoal::resolveDrvPath()
 {
-    std::jthread resolving;
+    HelperTask resolving;
     co_return co_await AsyncCallback<std::optional<StorePath>>{[&](Callback<std::optional<StorePath>> callback) {
-        resolving = std::jthread([&, callback = std::move(callback)]() mutable {
+        resolving = HelperTask([&, callback = std::move(callback)]() mutable {
             try {
                 ReceiveInterrupts receiveInterrupts;
                 std::optional<StorePath> drvPath;

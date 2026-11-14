@@ -25,6 +25,7 @@ headers = [ config_pub_h ] + files(
   'build/derivation-trampoline-goal.hh',
   'build/drv-output-substitution-goal.hh',
   'build/goal.hh',
+  'build/helper-task.hh',
   'build/substitution-goal.hh',
   'build/worker.hh',
   'builtins.hh',

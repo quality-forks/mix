@@ -1,6 +1,7 @@
 #include "goal-impl.hh"
 
 #include "nix/store/build/derivation-resolution-goal.hh"
+#include "nix/store/build/helper-task.hh"
 #include "nix/store/build/worker.hh"
 #include "nix/util/callback.hh"
 #include "nix/util/signals.hh"
@@ -10,7 +11,6 @@
 #include <nlohmann/json.hpp>
 
 #include <array>
-#include <thread>
 
 namespace nix {
 
@@ -104,14 +104,14 @@ DerivationResolutionGoal::resolveDerivation(const Derivation & drv, const Inputs
             built.insert_or_assign(*edge, output->outPath);
     }
 
-    std::jthread resolving;
+    HelperTask resolving;
     auto resolved = co_await AsyncCallback<std::shared_ptr<std::pair<StorePath, BasicDerivation>>>{
         [&](Callback<std::shared_ptr<std::pair<StorePath, BasicDerivation>>> callback) {
-            resolving = std::jthread([callback = std::move(callback),
-                                      &drv,
-                                      &built,
-                                      &store = worker.store,
-                                      &evalStore = worker.evalStore]() mutable {
+            resolving = HelperTask([callback = std::move(callback),
+                                    &drv,
+                                    &built,
+                                    &store = worker.store,
+                                    &evalStore = worker.evalStore]() mutable {
                 try {
                     ReceiveInterrupts receiveInterrupts;
                     auto attempt = tryResolve(
@@ -134,8 +134,8 @@ DerivationResolutionGoal::resolveDerivation(const Derivation & drv, const Inputs
                     assert(attempt);
 
                     auto path = computeStorePath(store, unresolve(*attempt));
-                    callback(std::make_shared<std::pair<StorePath, BasicDerivation>>(
-                        std::move(path), std::move(*attempt)));
+                    callback(
+                        std::make_shared<std::pair<StorePath, BasicDerivation>>(std::move(path), std::move(*attempt)));
                 } catch (...) {
                     callback.rethrow();
                 }
