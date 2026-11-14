@@ -17,7 +17,7 @@ struct HelperTaskState
 
 namespace {
 
-struct Pool
+struct HelperThreads
 {
     std::mutex lock;
     std::condition_variable queued;
@@ -80,7 +80,7 @@ struct Pool
 };
 
 /* Leaked, so exiting never destroys it under its threads. */
-Pool & pool = *new Pool;
+HelperThreads & helperThreads = *new HelperThreads;
 
 } // namespace
 
@@ -88,7 +88,7 @@ HelperTask::HelperTask(std::move_only_function<void()> work)
     : state(std::make_shared<HelperTaskState>())
 {
     state->work = std::move(work);
-    pool.submit(state);
+    helperThreads.submit(state);
 }
 
 void HelperTask::wait() noexcept
