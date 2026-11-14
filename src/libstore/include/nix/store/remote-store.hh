@@ -123,6 +123,8 @@ public:
         ContentAddressMethod hashMethod,
         HashAlgorithm hashAlgo) override;
 
+    void addBuildFiles(const std::vector<BuildFile> & files) override;
+
     void queryRealisationUncached(
         const DrvOutput &, Callback<std::shared_ptr<const UnkeyedRealisation>> callback) noexcept override;
 

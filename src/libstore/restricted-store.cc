@@ -9,6 +9,17 @@
 #include "nix/store/local-store.hh"
 #include "nix/util/error.hh"
 #include "nix/util/repair-flag.hh"
+#include "nix/util/archive.hh"
+#include "nix/util/file-system-at.hh"
+#include "nix/util/serialise.hh"
+
+#include <fcntl.h>
+#include <ranges>
+#include <sys/stat.h>
+
+#ifdef __linux__
+#  include <linux/openat2.h>
+#endif
 
 namespace nix {
 
@@ -125,6 +136,10 @@ public:
     void registerDrvOutputUnchecked(const Realisation & info) override;
 
     void submitOutput(const SingleDerivedPath & path, const OutputName & output) override;
+
+    void addBuildFiles(const std::vector<BuildFile> & files) override;
+
+    AutoCloseFD openBuildFile(const std::filesystem::path & file);
 
     ref<const ValidPathInfo> addToStoreScanning(
         Source & dump,
@@ -322,6 +337,96 @@ void RestrictedStore::registerDrvOutputUnchecked(const Realisation & info)
 void RestrictedStore::submitOutput(const SingleDerivedPath & path, const OutputName & output)
 {
     goal.submitOutput(path, output);
+}
+
+/* `relative` beneath `dir`, a regular file reached without a symlink. */
+static AutoCloseFD
+openBeneath(Descriptor dir, const std::filesystem::path & relative, const std::filesystem::path & shown)
+{
+#ifdef __linux__
+    auto fd = linux::openat2(
+        dir,
+        relative.c_str(),
+        O_RDONLY | O_CLOEXEC | O_NONBLOCK,
+        0,
+        RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS);
+    if (!fd)
+        throw Error("adding build files needs openat2");
+    if (!*fd)
+        throw SysError("opening build file %s", PathFmt(shown));
+    struct stat st;
+    if (fstat(fd->get(), &st) == -1)
+        throw SysError("statting build file %s", PathFmt(shown));
+    if (!S_ISREG(st.st_mode))
+        throw Error("build file %s is not a regular file", PathFmt(shown));
+    return std::move(*fd);
+#else
+    throw Error("adding build files needs Linux");
+#endif
+}
+
+AutoCloseFD RestrictedStore::openBuildFile(const std::filesystem::path & file)
+{
+    if (!isInStore(file.native())) {
+        auto [inSandbox, dir] = goal.buildDir();
+        auto relative = file.lexically_relative(inSandbox);
+        if (relative.empty() || *relative.begin() == "..")
+            throw Error("build file %s is in neither the store nor the build directory", PathFmt(file));
+        return openBeneath(dir, relative, file);
+    }
+
+    auto [storePath, rest] = toStorePath(file.native());
+    if (!goal.isAllowed(storePath))
+        throw InvalidPath("build file %s is not in an input of the build", PathFmt(file));
+    auto real = next->toRealPath(storePath);
+    auto [base, relative] = rest.isRoot() ? std::pair{real.parent_path(), real.filename()}
+                                          : std::pair{real, std::filesystem::path(rest.rel())};
+    auto root = openDirectory(base, FinalSymlink::DontFollow);
+    if (!root)
+        throw SysError("opening %s", PathFmt(base));
+    return openBeneath(root.get(), relative, file);
+}
+
+/* A NAR of one regular file read from `fd`. */
+static void dumpRegular(Descriptor fd, bool executable, Sink & sink)
+{
+    struct stat st;
+    if (fstat(fd, &st) == -1)
+        throw SysError("statting a build file");
+    uint64_t size = st.st_size;
+    sink << narVersionMagic1 << "(" << "type" << "regular";
+    if (executable)
+        sink << "executable" << "";
+    sink << "contents" << size;
+    std::array<char, 64 * 1024> buffer;
+    for (uint64_t left = size; left > 0;) {
+        auto count = ::read(fd, buffer.data(), std::min<uint64_t>(left, buffer.size()));
+        if (count == -1)
+            throw SysError("reading a build file");
+        if (count == 0)
+            throw EndOfFile("a build file shrank while the store read it");
+        sink(std::string_view{buffer.data(), static_cast<size_t>(count)});
+        left -= count;
+    }
+    writePadding(size, sink);
+    sink << ")";
+}
+
+void RestrictedStore::addBuildFiles(const std::vector<BuildFile> & files)
+{
+    /* Every file opens before any import, so a bad name fails alike
+       whether or not the store holds its path. */
+    std::vector<AutoCloseFD> opened;
+    opened.reserve(files.size());
+    for (auto & file : files)
+        opened.push_back(openBuildFile(file.file));
+
+    addInOneTransaction([&] {
+        for (auto && [file, fd] : std::views::zip(files, opened)) {
+            auto nar = sinkToSource([&](Sink & sink) { dumpRegular(fd.get(), file.executable, sink); });
+            addToStore(file.info, *nar, NoRepair, CheckSigs);
+        }
+    });
 }
 
 ref<const ValidPathInfo> RestrictedStore::addToStoreScanning(

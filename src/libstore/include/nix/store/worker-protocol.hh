@@ -151,6 +151,11 @@ struct WorkerProto
      */
     static constexpr std::string_view featureSubmitOutput = "submit-output";
 
+    /**
+     * Feature for enabling the `AddBuildFiles` operation
+     */
+    static constexpr std::string_view featureAddBuildFiles = "add-build-files";
+
     /*
      * Feature for the addTempRoots() operation.
      */
@@ -289,6 +294,7 @@ enum struct WorkerProto::Op : uint64_t {
     // QueryPathInfos = 50, // reserved for https://github.com/DeterminateSystems/nix-src/pull/539
     SubmitOutput = 1000, // Only used within derivations with feature
     AddToStoreScanning = 1001,
+    AddBuildFiles = 1002, // Only used within derivations with feature
 };
 
 struct WorkerProto::ClientHandshakeInfo

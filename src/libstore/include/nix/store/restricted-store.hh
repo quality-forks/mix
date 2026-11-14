@@ -77,6 +77,12 @@ public:
     virtual void submitOutput(const SingleDerivedPath & path, const OutputName & output) = 0;
 
     /**
+     * The build directory as the builder sees it, and a descriptor of it
+     * on the host.
+     */
+    virtual std::pair<std::filesystem::path, Descriptor> buildDir() = 0;
+
+    /**
      * Whether the paths the builder adds to the store are transient.
      */
     virtual bool transient()

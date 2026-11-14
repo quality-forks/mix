@@ -31,6 +31,20 @@ public:
         ContentAddressMethod hashMethod = ContentAddressMethod::Raw::NixArchive,
         HashAlgorithm hashAlgo = HashAlgorithm::SHA256) = 0;
 
+    struct BuildFile
+    {
+        ValidPathInfo info;
+        std::filesystem::path file;
+        bool executable;
+    };
+
+    /**
+     * Add each `info.path` from the regular file the builder sees at
+     * `file`, which the store reads itself only when it lacks the path, so
+     * the builder cannot tell which paths the store held.
+     */
+    virtual void addBuildFiles(const std::vector<BuildFile> & files) = 0;
+
     static SubmitStore & require(Store & store);
 };
 

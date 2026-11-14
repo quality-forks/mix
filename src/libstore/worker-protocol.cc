@@ -52,6 +52,7 @@ const WorkerProto::Version WorkerProto::builderRpcV0 = {
             std::string{WorkerProto::featureDisableSetOptions},
             std::string{WorkerProto::featureAddToStoreScanning},
             std::string{WorkerProto::featureSubmitOutput},
+            std::string{WorkerProto::featureAddBuildFiles},
         },
 };
 

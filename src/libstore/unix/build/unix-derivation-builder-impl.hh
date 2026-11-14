@@ -132,6 +132,11 @@ protected:
 
     bool isAllowed(const DerivedPath & req);
 
+    std::pair<std::filesystem::path, Descriptor> buildDir() override
+    {
+        return {tmpDirInSandbox(), tmpDirFd.get()};
+    }
+
     bool shouldModifySandbox() override
     {
         return !usingSubmitted;

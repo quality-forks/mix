@@ -338,6 +338,7 @@ static void performOp(
             WorkerProto::Op::AddToStoreScanning,
             // SubmitOutput is designed specifically for this use case
             WorkerProto::Op::SubmitOutput,
+            WorkerProto::Op::AddBuildFiles,
             // Used by nix cli, should never change actual outputs
             WorkerProto::Op::AddTempRoot,
             // Used by nix cli, restricted store will prevent it from seeing derivations it shouldn't
@@ -351,7 +352,7 @@ static void performOp(
         // derivaitons that use it.
         // AddToStoreScanning is still acceptable in ordinary recursive derivations, though.
         // Throw the same error we do when using an unknown operation.
-        if (op == WorkerProto::Op::SubmitOutput
+        if (op == WorkerProto::Op::SubmitOutput || op == WorkerProto::Op::AddBuildFiles
             || (op == WorkerProto::Op::AddToStoreScanning && recursive == daemon::RecursiveFlag::NotRecursive)) {
             throw Error("invalid operation %1%", op);
         }
@@ -1125,6 +1126,33 @@ static void performOp(
         submitStore.submitOutput(path, output);
         logger->stopWork();
         conn.to << 1;
+        break;
+    }
+
+    case WorkerProto::Op::AddBuildFiles: {
+        if (!conn.protoVersion.features.contains(WorkerProto::featureAddBuildFiles))
+            throw Error("AddBuildFiles was requested, but not supported in negotiated protocol");
+
+        auto count = readNum<size_t>(conn.from);
+        std::vector<SubmitStore::BuildFile> files;
+        files.reserve(std::min<size_t>(count, 1 << 16));
+        for (size_t i = 0; i < count; ++i) {
+            auto info = WorkerProto::Serialise<ValidPathInfo>::read(
+                *store,
+                WorkerProto::ReadConn{
+                    .from = conn.from,
+                    .version = {.number = {.major = 1, .minor = 16}},
+                });
+            info.ultimate = false;
+            std::filesystem::path file = readString(conn.from);
+            bool executable = readNum<unsigned>(conn.from);
+            files.push_back({.info = std::move(info), .file = std::move(file), .executable = executable});
+        }
+        auto & submitStore = require<SubmitStore>(*store);
+
+        logger->startWork();
+        submitStore.addBuildFiles(files);
+        logger->stopWork();
         break;
     }
 

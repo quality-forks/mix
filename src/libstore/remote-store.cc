@@ -100,6 +100,7 @@ void RemoteStore::initConnection(Connection & conn)
             localVersion.features.insert(std::string{WorkerProto::featureDisableSetOptions});
             localVersion.features.insert(std::string{WorkerProto::featureAddToStoreScanning});
             localVersion.features.insert(std::string{WorkerProto::featureSubmitOutput});
+            localVersion.features.insert(std::string{WorkerProto::featureAddBuildFiles});
 
             conn.protoVersion = WorkerProto::BasicClientConnection::handshake(conn.to, tee, localVersion);
             if (conn.protoVersion.number < WorkerProto::minimum.number)
@@ -522,6 +523,27 @@ void RemoteStore::submitOutput(const SingleDerivedPath & path, const OutputName 
     conn->to << output;
     conn.processStderr();
     readInt(conn->from);
+}
+
+void RemoteStore::addBuildFiles(const std::vector<BuildFile> & files)
+{
+    auto conn(getConnection());
+    if (!conn->protoVersion.features.contains(WorkerProto::featureAddBuildFiles))
+        throw Error(
+            "the daemon does not support AddBuildFiles, perhaps this is not in a derivation with the `builder-rpc-v0` feature?");
+
+    conn->to << WorkerProto::Op::AddBuildFiles << files.size();
+    for (auto & file : files) {
+        WorkerProto::Serialise<ValidPathInfo>::write(
+            *this,
+            WorkerProto::WriteConn{
+                .to = conn->to,
+                .version = {.number = {.major = 1, .minor = 16}},
+            },
+            file.info);
+        conn->to << file.file.native() << file.executable;
+    }
+    conn.processStderr();
 }
 
 ref<const ValidPathInfo> RemoteStore::addToStoreScanning(
