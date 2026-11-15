@@ -28,6 +28,10 @@
 #include "crash-handler.hh"
 #include "cli-config-private.hh"
 
+#if HAVE_MIMALLOC
+#  include <mimalloc.h>
+#endif
+
 #include <sys/types.h>
 #include <nlohmann/json.hpp>
 
@@ -602,6 +606,12 @@ void mainWrapped(int argc, char ** argv)
 
 int main(int argc, char ** argv)
 {
+#if HAVE_MIMALLOC
+    /* With THP enabled mimalloc returns only free ranges of a whole 2 MiB,
+       so a daemon worker whose free pages sat between live ones kept over
+       20 GiB of them resident. */
+    mi_option_set(mi_option_minimal_purge_size, 64);
+#endif
     // The CLI has a more detailed version than the libraries; see nixVersion.
     nix::nixVersion = NIX_CLI_VERSION;
     return nix::handleExceptions(argv[0], [&]() { nix::mainWrapped(argc, argv); });

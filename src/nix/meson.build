@@ -51,6 +51,7 @@ subdir('nix-meson-build-support/export-all-symbols')
 subdir('nix-meson-build-support/windows-version')
 
 configdata = configuration_data()
+configdata.set('HAVE_MIMALLOC', mimalloc.found().to_int())
 
 # The CLI has a more detailed version string than the libraries; see `nixVersion`
 configdata.set_quoted('NIX_CLI_VERSION', meson.project_version())
