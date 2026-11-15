@@ -1,5 +1,6 @@
 #include "nix/store/build/helper-task.hh"
 
+#include <algorithm>
 #include <condition_variable>
 #include <deque>
 #include <mutex>
@@ -22,9 +23,13 @@ struct HelperThreads
     std::mutex lock;
     std::condition_variable queued;
     std::deque<std::shared_ptr<HelperTaskState>> tasks;
-    /** Tasks queued or running, never more than `threads`. */
+    /** Tasks queued or running. */
     size_t busy = 0;
     size_t threads = 0;
+    /** Threads never exit and each holds a mimalloc heap of its own, so a
+        burst of goals must not size the pool. No task waits on another, so
+        a queued task only waits for a thread. */
+    const size_t maxThreads = std::max<size_t>(32, 4 * std::thread::hardware_concurrency());
 
     void serve()
     {
@@ -54,7 +59,7 @@ struct HelperThreads
     {
         std::unique_lock guard(lock);
         tasks.push_back(std::move(task));
-        if (++busy <= threads) {
+        if (++busy <= threads || threads >= maxThreads) {
             queued.notify_one();
             return;
         }
