@@ -616,11 +616,14 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
     boost::unordered_flat_set<StorePath, std::hash<StorePath>> transient;
 
     /* Evicts transient paths nothing refers to, least recently used first,
-       until they fit `transient-store-size`, and transient derivations
+       until they fit in 90% of `transient-store-size` once over it, since
+       each pass scans every root, and transient derivations
        unused for ten minutes whatever the size. Each round frees the paths
        the last one's victims referred to. */
     auto evictTransient = [&]() {
         auto budget = gcSettings.transientStoreSize.get();
+        if (queryTransientSize() > budget)
+            budget -= budget / 10;
         auto unusedSince = time(nullptr) - 10 * 60;
 
         while (true) {
