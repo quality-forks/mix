@@ -74,6 +74,8 @@ struct ChrootLinuxDerivationBuilder : ChrootDerivationBuilder, LinuxDerivationBu
 
     Veneer mountVeneer(const StorePath & manifest, const std::filesystem::path & target, bool writable);
 
+    std::optional<std::pair<std::filesystem::path, Descriptor>> inVeneer(const std::filesystem::path & file) override;
+
     /**
      * What `prepareChild` hands the helper.
      */

@@ -367,6 +367,9 @@ openBeneath(Descriptor dir, const std::filesystem::path & relative, const std::f
 
 AutoCloseFD RestrictedStore::openBuildFile(const std::filesystem::path & file)
 {
+    if (auto beneath = goal.inVeneer(file))
+        return openBeneath(beneath->second, beneath->first, file);
+
     if (!isInStore(file.native())) {
         auto [inSandbox, dir] = goal.buildDir();
         auto relative = file.lexically_relative(inSandbox);

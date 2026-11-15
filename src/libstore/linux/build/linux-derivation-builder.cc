@@ -970,6 +970,17 @@ ChrootLinuxDerivationBuilder::Veneer ChrootLinuxDerivationBuilder::mountVeneer(
     return veneer;
 }
 
+std::optional<std::pair<std::filesystem::path, Descriptor>>
+ChrootLinuxDerivationBuilder::inVeneer(const std::filesystem::path & file)
+{
+    for (auto & veneer : veneers) {
+        auto relative = file.lexically_relative(veneer.target);
+        if (!relative.empty() && *relative.begin() != "..")
+            return std::pair{relative, veneer.mount.get()};
+    }
+    return std::nullopt;
+}
+
 void ChrootLinuxDerivationBuilder::prepareChild()
 {
     /* Set up private namespaces for the build:
@@ -1625,7 +1636,9 @@ void sandboxHelperMain()
 BuilderExit ChrootLinuxDerivationBuilder::unprepareBuild()
 {
     /* Closing the last reference to the sandbox's mount namespace unmounts every bind mount in it
-       before close() returns, a cost per input path that would otherwise stall every other goal. */
+       before close() returns, a cost per input path that would otherwise stall every other goal.
+       The veneers outlive the recursive daemon, which opens build files through them. */
+    auto builderExit = UnixDerivationBuilderImpl::unprepareBuild();
     if (sandboxMountNamespace || sandboxUserNamespace || !veneers.empty())
         std::thread([mountNamespace = std::move(sandboxMountNamespace),
                      userNamespace = std::move(sandboxUserNamespace),
@@ -1639,7 +1652,7 @@ BuilderExit ChrootLinuxDerivationBuilder::unprepareBuild()
             }
         }).detach();
 
-    return UnixDerivationBuilderImpl::unprepareBuild();
+    return builderExit;
 }
 
 void ChrootLinuxDerivationBuilder::killSandbox(bool getStats)

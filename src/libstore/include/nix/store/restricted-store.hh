@@ -83,6 +83,16 @@ public:
     virtual std::pair<std::filesystem::path, Descriptor> buildDir() = 0;
 
     /**
+     * Where `file` lies in a veneer the builder sees, as a path beneath
+     * the overlay's root and a descriptor of that root. The host holds
+     * a veneer's manifest at its store path, not its tree.
+     */
+    virtual std::optional<std::pair<std::filesystem::path, Descriptor>> inVeneer(const std::filesystem::path & file)
+    {
+        return std::nullopt;
+    }
+
+    /**
      * Whether the paths the builder adds to the store are transient.
      */
     virtual bool transient()
