@@ -607,10 +607,12 @@ void mainWrapped(int argc, char ** argv)
 int main(int argc, char ** argv)
 {
 #if HAVE_MIMALLOC
-    /* With THP enabled mimalloc returns only free ranges of a whole 2 MiB,
-       so a daemon worker whose free pages sat between live ones kept over
-       20 GiB of them resident. */
-    mi_option_set(mi_option_minimal_purge_size, 64);
+    /* With THP allowed mimalloc asks for huge pages on its arenas, which a
+       daemon worker's page faults compacted memory for, and returns only
+       free ranges of a whole 2 MiB, so free pages between live ones stayed
+       resident. The option, unlike MIMALLOC_ALLOW_THP=0, leaves builders
+       THP to ask for, since PR_SET_THP_DISABLE survives fork and exec. */
+    mi_option_set(mi_option_allow_thp, 0);
 #endif
     // The CLI has a more detailed version than the libraries; see nixVersion.
     nix::nixVersion = NIX_CLI_VERSION;
