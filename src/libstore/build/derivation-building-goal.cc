@@ -1245,15 +1245,15 @@ Goal::Co<DerivationBuildingGoal::LocalBuildOutcome> DerivationBuildingGoal::buil
 
     trace("build done");
 
-    /* A recursive-nix connection can wait on the store's locks for seconds, and joining it here
-       would stall every other goal. */
+    /* Destroying the sandbox's cgroup, compressing the log and joining a recursive-nix connection,
+       which can wait on the store's locks, take long enough here to stall every other goal. */
     builder->stopBuilder();
     {
         HelperTask joining;
         co_await AsyncCallback<std::monostate>{[&](Callback<std::monostate> callback) {
             joining = HelperTask([callback = std::move(callback), builder = builder.get()]() mutable {
                 try {
-                    builder->joinDaemon();
+                    builder->reapBuilder();
                     callback(std::monostate{});
                 } catch (...) {
                     callback.rethrow();

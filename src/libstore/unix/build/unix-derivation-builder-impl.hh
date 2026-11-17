@@ -111,7 +111,7 @@ protected:
     std::list<DaemonWorkerState> daemonWorkerThreads;
 
     /**
-     * The builder's exit status, once `stopBuilder` has run.
+     * The builder's exit status, once `reapBuilder` has run.
      */
     std::optional<int> builderStatus;
 
@@ -175,7 +175,7 @@ public:
 
     void stopBuilder() override;
 
-    void joinDaemon() override;
+    void reapBuilder() override;
 
     void cleanupBuild(bool force) override;
 
@@ -292,6 +292,11 @@ private:
      * @see startDaemon
      */
     void shutdownDaemon();
+
+    /**
+     * Wait for the in-process nix daemon threads to finish.
+     */
+    void joinDaemon();
 
 protected:
 

@@ -276,17 +276,18 @@ public:
     virtual BuilderExit unprepareBuild() = 0;
 
     /**
-     * Kill the builder once its log has closed and stop accepting
-     * recursive-nix connections. The first half of `unprepareBuild`,
-     * for the goal's thread.
+     * Release the builder's job slot and stop accepting recursive-nix
+     * connections once its log has closed. The goal's thread runs
+     * this first.
      */
     virtual void stopBuilder() {}
 
     /**
-     * Wait for the recursive-nix connections to end. Any thread may
-     * run this after `stopBuilder`.
+     * Kill the builder and its sandbox, close its log and wait for its
+     * recursive-nix connections to end. Any thread may run this after
+     * `stopBuilder`.
      */
-    virtual void joinDaemon() {}
+    virtual void reapBuilder() {}
 
     /**
      * Check that the derivation outputs all exist and register them

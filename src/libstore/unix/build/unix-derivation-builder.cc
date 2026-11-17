@@ -132,6 +132,20 @@ bool UnixDerivationBuilderImpl::killChild()
 
 void UnixDerivationBuilderImpl::stopBuilder()
 {
+    if (!builderOut)
+        return;
+
+    miscMethods->childTerminated();
+
+    /* Close the read side of the logger pipe. */
+    builderOut.close();
+
+    /* Terminate the recursive Nix daemons. */
+    shutdownDaemon();
+}
+
+void UnixDerivationBuilderImpl::reapBuilder()
+{
     if (builderStatus)
         return;
 
@@ -146,12 +160,6 @@ void UnixDerivationBuilderImpl::stopBuilder()
     buildResult.timesBuilt++;
     buildResult.stopTime = time(nullptr);
 
-    /* So the child is gone now. */
-    miscMethods->childTerminated();
-
-    /* Close the read side of the logger pipe. */
-    builderOut.close();
-
     /* Close the log file. */
     miscMethods->closeLogFile();
 
@@ -162,14 +170,13 @@ void UnixDerivationBuilderImpl::stopBuilder()
        root. */
     killSandbox(true);
 
-    /* Terminate the recursive Nix daemons. */
-    shutdownDaemon();
+    joinDaemon();
 }
 
 BuilderExit UnixDerivationBuilderImpl::unprepareBuild()
 {
     stopBuilder();
-    joinDaemon();
+    reapBuilder();
 
     int status = *builderStatus;
 
