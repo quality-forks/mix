@@ -127,8 +127,6 @@ struct LocalStore::State::Stmts
     SQLiteStmt MarkTransient;
     SQLiteStmt TouchTransient;
     SQLiteStmt QueryTransientPaths;
-    SQLiteStmt QueryTransientSize;
-    SQLiteStmt QueryEvictableTransient;
     SQLiteStmt ForgetBuildTracesOf;
     SQLiteStmt QueryPathFromHashPart;
     SQLiteStmt QueryValidPaths;
@@ -139,6 +137,8 @@ struct LocalStore::Reader
     SQLite db;
     SQLiteStmt QueryPathInfo;
     SQLiteStmt QueryReferences;
+    SQLiteStmt QueryTransientSize;
+    SQLiteStmt QueryEvictableTransient;
 };
 
 LocalStore::LocalStore(ref<const Config> config)
@@ -167,6 +167,18 @@ LocalStore::LocalStore(ref<const Config> config)
             "select id, hash, registrationTime, deriver, narSize, ultimate, sigs, ca from ValidPaths where path = ?;");
         reader->QueryReferences.create(
             reader->db, "select path from Refs join ValidPaths on reference = id where referrer = ?;");
+        if (!this->config->readOnly) {
+            reader->QueryTransientSize.create(
+                reader->db,
+                "select coalesce(sum(v.narSize), 0) from Transient t join ValidPaths v on v.id = t.path;");
+            reader->QueryEvictableTransient.create(
+                reader->db,
+                R"(
+                    select v.path, coalesce(v.narSize, 0), t.lastUsed from Transient t join ValidPaths v on v.id = t.path
+                        where not exists (select 1 from Refs r where r.reference = t.path and r.referrer != t.path)
+                        order by t.lastUsed;
+                )");
+        }
         return reader;
     }))
 {
@@ -482,15 +494,6 @@ LocalStore::LocalStore(ref<const Config> config)
             )");
         state->stmts->QueryTransientPaths.create(
             state->db, "select v.path from Transient t join ValidPaths v on v.id = t.path;");
-        state->stmts->QueryTransientSize.create(
-            state->db, "select coalesce(sum(v.narSize), 0) from Transient t join ValidPaths v on v.id = t.path;");
-        state->stmts->QueryEvictableTransient.create(
-            state->db,
-            R"(
-                select v.path, coalesce(v.narSize, 0), t.lastUsed from Transient t join ValidPaths v on v.id = t.path
-                    where not exists (select 1 from Refs r where r.reference = t.path and r.referrer != t.path)
-                    order by t.lastUsed;
-            )");
     }
 }
 
@@ -945,8 +948,8 @@ uint64_t LocalStore::queryTransientSize()
     if (config->readOnly)
         return 0;
     return retrySQLite<uint64_t>([&]() {
-        auto state(_state->lock());
-        auto query(state->stmts->QueryTransientSize.use());
+        auto reader(readers->get());
+        auto query(reader->QueryTransientSize.use());
         query.next();
         return static_cast<uint64_t>(query.getInt(0));
     });
@@ -957,9 +960,9 @@ std::vector<LocalStore::EvictableTransient> LocalStore::queryEvictableTransient(
     if (config->readOnly)
         return {};
     return retrySQLite<std::vector<EvictableTransient>>([&]() {
-        auto state(_state->lock());
+        auto reader(readers->get());
         std::vector<EvictableTransient> evictable;
-        auto query(state->stmts->QueryEvictableTransient.use());
+        auto query(reader->QueryEvictableTransient.use());
         while (query.next())
             evictable.push_back({
                 .path = parseStorePath(query.getStr(0)),
