@@ -1144,14 +1144,17 @@ Goal::Co<DerivationBuildingGoal::LocalBuildOutcome> DerivationBuildingGoal::buil
                     preparing = HelperTask([callback = std::move(callback), builder = builder.get()]() mutable {
                         try {
                             ReceiveInterrupts receiveInterrupts;
-                            callback(builder->startBuild());
+                            auto started = builder->startBuild();
+                            /* vfork keeps the calling thread until the child execs, which takes long
+                               on a loaded machine. */
+                            if (started)
+                                builder->startChild();
+                            callback(std::move(started));
                         } catch (...) {
                             callback.rethrow();
                         }
                     });
                 }};
-            if (started)
-                builder->startChild();
         } catch (BuildError &) {
             throw;
         } catch (Error & e) {
