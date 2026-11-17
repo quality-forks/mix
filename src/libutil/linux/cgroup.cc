@@ -1,4 +1,5 @@
 #include "nix/util/cgroup.hh"
+#include "nix/util/environment-variables.hh"
 #include "nix/util/signals.hh"
 #include "nix/util/util.hh"
 #include "nix/util/file-system.hh"
@@ -170,7 +171,14 @@ CanonPath getCurrentCgroup()
 
 CanonPath getRootCgroup()
 {
-    static auto rootCgroup = getCurrentCgroup();
+    /* A daemon worker starts in the daemon's own sub-cgroup, which holds processes, so build
+       cgroups made below it can have no controllers and every build shares one CPU domain with
+       the daemon. The daemon passes down the service cgroup instead. */
+    static auto rootCgroup = [] {
+        if (auto root = getEnvNonEmpty("_NIX_ROOT_CGROUP"))
+            return CanonPath{*root};
+        return getCurrentCgroup();
+    }();
     return rootCgroup;
 }
 

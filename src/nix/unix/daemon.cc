@@ -365,6 +365,10 @@ static void daemonLoop(
        It doesn't actually roundtrip. Note that a relative path shorthand will be resolved by StoreReference::parse
        called during option parsing (quite janky). */
     workerEnv[OS_STR("NIX_CONFIG")] = workerConfig;
+#ifdef __linux__
+    if (settings.getLocalSettings().useCgroups)
+        workerEnv[OS_STR("_NIX_ROOT_CGROUP")] = linux::getRootCgroup().abs();
+#endif
 
     /* lvlInfo is the default used by nix-daemon (or anything using RegisterLegacyCommand for that matter). */
     std::vector<OsString> workerVerbosityFlags = [&]() -> std::vector<OsString> {
