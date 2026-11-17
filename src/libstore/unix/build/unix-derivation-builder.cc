@@ -130,13 +130,16 @@ bool UnixDerivationBuilderImpl::killChild()
     return ret;
 }
 
-BuilderExit UnixDerivationBuilderImpl::unprepareBuild()
+void UnixDerivationBuilderImpl::stopBuilder()
 {
+    if (builderStatus)
+        return;
+
     /* Since we got an EOF on the logger pipe, the builder is presumed
        to have terminated.  In fact, the builder could also have
        simply have closed its end of the pipe, so just to be sure,
        kill it. */
-    int status = pid.kill();
+    builderStatus = pid.kill();
 
     debug("builder process for '%s' finished", store->printStorePath(drvPath));
 
@@ -160,7 +163,15 @@ BuilderExit UnixDerivationBuilderImpl::unprepareBuild()
     killSandbox(true);
 
     /* Terminate the recursive Nix daemons. */
-    stopDaemon();
+    shutdownDaemon();
+}
+
+BuilderExit UnixDerivationBuilderImpl::unprepareBuild()
+{
+    stopBuilder();
+    joinDaemon();
+
+    int status = *builderStatus;
 
     if (buildResult.cpuUser && buildResult.cpuSystem) {
         debug(
@@ -769,7 +780,7 @@ void UnixDerivationBuilderImpl::startDaemon()
     });
 }
 
-void UnixDerivationBuilderImpl::stopDaemon()
+void UnixDerivationBuilderImpl::shutdownDaemon()
 {
     if (daemonSocket && shutdown(daemonSocket.get(), SHUT_RDWR) == -1) {
         // According to the POSIX standard, the 'shutdown' function should
@@ -787,7 +798,10 @@ void UnixDerivationBuilderImpl::stopDaemon()
             throw SysError("shutting down daemon socket");
         }
     }
+}
 
+void UnixDerivationBuilderImpl::joinDaemon()
+{
     if (daemonThread.joinable())
         daemonThread.join();
 

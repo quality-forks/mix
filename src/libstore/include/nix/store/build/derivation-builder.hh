@@ -276,6 +276,19 @@ public:
     virtual BuilderExit unprepareBuild() = 0;
 
     /**
+     * Kill the builder once its log has closed and stop accepting
+     * recursive-nix connections. The first half of `unprepareBuild`,
+     * for the goal's thread.
+     */
+    virtual void stopBuilder() {}
+
+    /**
+     * Wait for the recursive-nix connections to end. Any thread may
+     * run this after `stopBuilder`.
+     */
+    virtual void joinDaemon() {}
+
+    /**
      * Check that the derivation outputs all exist and register them
      * as valid.
      *

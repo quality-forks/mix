@@ -54,7 +54,8 @@ public:
             ignoreExceptionInDestructor();
         }
         try {
-            stopDaemon();
+            shutdownDaemon();
+            joinDaemon();
         } catch (...) {
             ignoreExceptionInDestructor();
         }
@@ -108,6 +109,11 @@ protected:
      * The daemon worker threads.
      */
     std::list<DaemonWorkerState> daemonWorkerThreads;
+
+    /**
+     * The builder's exit status, once `stopBuilder` has run.
+     */
+    std::optional<int> builderStatus;
 
     const StorePathSet & originalPaths() override
     {
@@ -166,6 +172,10 @@ public:
     void awaitSetup() override;
 
     BuilderExit unprepareBuild() override;
+
+    void stopBuilder() override;
+
+    void joinDaemon() override;
 
     void cleanupBuild(bool force) override;
 
@@ -278,10 +288,10 @@ private:
     void startDaemon();
 
     /**
-     * Stop the in-process nix daemon thread.
+     * Stop the in-process nix daemon thread accepting connections.
      * @see startDaemon
      */
-    void stopDaemon();
+    void shutdownDaemon();
 
 protected:
 
