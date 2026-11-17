@@ -137,6 +137,8 @@ struct LocalStore::Reader
     SQLite db;
     SQLiteStmt QueryPathInfo;
     SQLiteStmt QueryReferences;
+    SQLiteStmt QueryDerivationOutputs;
+    SQLiteStmt QueryRealisedOutput;
     SQLiteStmt QueryTransientSize;
     SQLiteStmt QueryEvictableTransient;
 };
@@ -167,6 +169,10 @@ LocalStore::LocalStore(ref<const Config> config)
             "select id, hash, registrationTime, deriver, narSize, ultimate, sigs, ca from ValidPaths where path = ?;");
         reader->QueryReferences.create(
             reader->db, "select path from Refs join ValidPaths on reference = id where referrer = ?;");
+        reader->QueryDerivationOutputs.create(reader->db, "select id, path from DerivationOutputs where drv = ?;");
+        if (experimentalFeatureSettings.isEnabled(Xp::CaDerivations))
+            reader->QueryRealisedOutput.create(
+                reader->db, "select id, outputPath, signatures from BuildTraceV3 where drvPath = ? and outputName = ?;");
         if (!this->config->readOnly) {
             reader->QueryTransientSize.create(
                 reader->db,
@@ -1205,11 +1211,12 @@ std::map<std::string, std::optional<StorePath>>
 LocalStore::queryStaticPartialDerivationOutputMap(const StorePath & path)
 {
     return retrySQLite<std::map<std::string, std::optional<StorePath>>>([&]() {
-        auto state(_state->lock());
+        auto reader(readers->get());
         std::map<std::string, std::optional<StorePath>> outputs;
-        uint64_t drvId;
-        drvId = queryValidPathId(*state, path);
-        auto use(state->stmts->QueryDerivationOutputs.use().apply(drvId));
+        auto valid(reader->QueryPathInfo.use().apply(printStorePath(path)));
+        if (!valid.next())
+            throw InvalidPath("path '%s' is not valid", printStorePath(path));
+        auto use(reader->QueryDerivationOutputs.use().apply(valid.getInt(0)));
         while (use.next())
             outputs.insert_or_assign(use.getStr(0), parseStorePath(use.getStr(1)));
 
@@ -2060,7 +2067,16 @@ void LocalStore::queryRealisationUncached(
 {
     try {
         auto maybeRealisation = retrySQLite<std::optional<const UnkeyedRealisation>>(
-            [&]() { return queryRealisation_(*_state->lock(), id); });
+            [&]() -> std::optional<const UnkeyedRealisation> {
+                auto reader(readers->get());
+                auto use(reader->QueryRealisedOutput.use().apply(id.drvPath.to_string()).apply(id.outputName));
+                if (!use.next())
+                    return std::nullopt;
+                return UnkeyedRealisation{
+                    .outPath = parseStorePath(use.getStr(1)),
+                    .signatures = Signature::parseMany(tokenizeString<StringSet>(use.getStr(2))),
+                };
+            });
         if (maybeRealisation)
             callback(std::make_shared<const UnkeyedRealisation>(maybeRealisation.value()));
         else
