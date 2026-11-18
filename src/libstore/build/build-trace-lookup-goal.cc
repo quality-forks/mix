@@ -52,6 +52,23 @@ Goal::Co<Goal::ExitCode> BuildTraceLookupGoal::init(std::shared_ptr<const Deriva
     if (!drv)
         drv = co_await readDerivation(*drvPath);
 
+    /* A store serving the build trace drops a produced derivation once built,
+       leaving the outer entry pointing at a path no substituter has. Its
+       unresolved key still answers, and without the derivation there is no
+       resolving it anyway. */
+    if (!drv && unresolvedGoal) {
+        if (!unresolvedGoal->exitCode)
+            co_await await({unresolvedGoal});
+        nrFailed = nrNoSubstituters = 0;
+        if (unresolvedGoal->exitCode == ecSuccess) {
+            substituted = true;
+            traceKey = DrvOutput{*drvPath, req.output};
+            outputInfo = unresolvedGoal->outputInfo;
+            co_return ecSuccess;
+        }
+        worker.buildTraceMisses.insert(req);
+    }
+
     if (!drv || type(*drv).isImpure() || !drv->outputs.contains(req.output))
         co_return ecNoSubstituters;
 
