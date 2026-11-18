@@ -132,9 +132,13 @@ Goal::Co<std::optional<DerivationTrampolineGoal::Result>> DerivationTrampolineGo
 
     Goals substitutions;
     if (nrFailed == 0)
-        for (auto & [_, lookup] : lookups)
+        for (auto & [_, lookup] : lookups) {
+            /* Rooted before the check, since transient eviction deletes an
+               unrooted output between it and a dependent's build. */
+            worker.store.addTempRoot(lookup->outputInfo->outPath);
             if (!worker.store.isValidPath(lookup->outputInfo->outPath))
                 substitutions.insert(upcast_goal(worker.makePathSubstitutionGoal(lookup->outputInfo->outPath)));
+        }
 
     bool substituted = !substitutions.empty();
     co_await await(std::move(substitutions));
@@ -147,8 +151,6 @@ Goal::Co<std::optional<DerivationTrampolineGoal::Result>> DerivationTrampolineGo
     SingleDrvOutputs outputs;
     for (auto & [output, lookup] : lookups) {
         lookup->registerBuildTrace();
-        if (lookup->outputInfo->outPath.isDerivation())
-            worker.store.addTempRoot(lookup->outputInfo->outPath);
         outputs.insert_or_assign(output, *lookup->outputInfo);
     }
 
