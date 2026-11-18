@@ -22,7 +22,9 @@
 #include <sys/resource.h>
 #include <sys/socket.h>
 #ifdef __linux__
+#  include <poll.h>
 #  include <sys/prctl.h>
+#  include <sys/syscall.h>
 #  include "nix/util/linux-namespaces.hh"
 #endif
 
@@ -153,6 +155,15 @@ void UnixDerivationBuilderImpl::reapBuilder()
        to have terminated.  In fact, the builder could also have
        simply have closed its end of the pipe, so just to be sure,
        kill it. */
+#ifdef __linux__
+    /* coreutils closes stdout and stderr in an atexit handler, so the log
+       reaches EOF just before the builder exits, and a SIGKILL in that gap
+       fails the build with signal 9. */
+    if (AutoCloseFD pidFd = syscall(SYS_pidfd_open, pid_t(pid), 0)) {
+        pollfd exited{.fd = pidFd.get(), .events = POLLIN};
+        poll(&exited, 1, 1000);
+    }
+#endif
     builderStatus = pid.kill();
 
     debug("builder process for '%s' finished", store->printStorePath(drvPath));
