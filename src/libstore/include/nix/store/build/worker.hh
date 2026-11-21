@@ -241,6 +241,12 @@ public:
      */
     ExitStatusFlags exitStatusFlags;
 
+    /**
+     * Derivations whose builder failed in this session. The goal maps hold weak pointers, so each
+     * dependent that asks after the failure would otherwise build the derivation again.
+     */
+    std::set<StorePath> failedDerivations;
+
 #ifdef _WIN32
     AutoCloseFD ioport;
 #endif
