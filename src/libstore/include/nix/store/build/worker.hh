@@ -164,6 +164,12 @@ private:
     std::map<DrvOutput, std::weak_ptr<DrvOutputSubstitutionGoal>> drvOutputSubstitutionGoals;
     std::map<SingleDerivedPath::Built, std::weak_ptr<BuildTraceLookupGoal>> buildTraceLookupGoals;
 
+    /**
+     * Derivations whose builder failed in this session. The goal maps hold weak pointers, so each
+     * dependent that asks after the failure would otherwise build the derivation again.
+     */
+    std::set<StorePath> failedDerivations;
+
     std::optional<Machines> remoteMachines;
 
     std::map<StorePath, bool> knownRecorded;

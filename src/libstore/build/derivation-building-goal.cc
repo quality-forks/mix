@@ -167,6 +167,14 @@ static std::unique_ptr<PostBuildHookState> runPostBuildHook(
 
 Goal::Co<Goal::ExitCode> DerivationBuildingGoal::init()
 {
+    if (buildMode == bmNormal && worker.failedDerivations.contains(drvPath)) {
+        buildResult.inner = BuildError(
+            BuildResult::Failure::CachedFailure,
+            "Cannot build '%s'.\nReason: " ANSI_RED "it failed earlier in this build" ANSI_NORMAL ".",
+            worker.store.printStorePath(drvPath));
+        co_return ecFailed;
+    }
+
     auto result = co_await tryToBuild();
 
     mcRunningBuilds.reset();
@@ -182,6 +190,9 @@ Goal::Co<Goal::ExitCode> DerivationBuildingGoal::init()
                 worker.exitStatusFlags.updateFromStatus(failure.status);
                 if (failure.status != BuildResult::Failure::DependencyFailed)
                     worker.failedBuilds++;
+                if (buildMode == bmNormal && failure.status != BuildResult::Failure::DependencyFailed
+                    && failure.status != BuildResult::Failure::TransientFailure)
+                    worker.failedDerivations.insert(drvPath);
                 return ecFailed;
             },
         },
