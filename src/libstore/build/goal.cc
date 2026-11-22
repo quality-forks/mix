@@ -162,7 +162,8 @@ void Goal::work()
     // expected behavior, not an error.
     if (result == ecFailed) {
         if (auto * failure = buildResult.tryGetFailure()) {
-            if (!preserveFailure && !waiters.empty()) {
+            if (!preserveFailure && !waiters.empty() && failure->status != BuildResult::Failure::CachedFailure
+                && worker.reportedFailures.insert(failure->info().msg.str()).second) {
                 if (worker.settings.keepGoing)
                     logError(failure->info());
                 else

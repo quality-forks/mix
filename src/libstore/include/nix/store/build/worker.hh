@@ -247,6 +247,12 @@ public:
      */
     std::set<StorePath> failedDerivations;
 
+    /**
+     * Failure messages already printed. Every dependent of a failed derivation asks after it again
+     * and fails the same way, so each message is printed once.
+     */
+    std::set<std::string> reportedFailures;
+
 #ifdef _WIN32
     AutoCloseFD ioport;
 #endif
