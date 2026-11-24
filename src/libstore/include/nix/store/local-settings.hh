@@ -482,20 +482,18 @@ public:
         )"};
 #endif
 
-#ifdef __linux__
     Setting<std::optional<AbsolutePath>> veneerHelper{
         this,
         std::nullopt,
         "veneer-helper",
         R"(
-            *Linux only*
-
             The program writing the metadata trees of the manifests a
             derivation lists in [`__veneers`](@docroot@/language/advanced-attributes.md#adv-attr-veneers),
             run as `veneer-helper veneer build` and `veneer-helper veneer evict`.
             Without it such a derivation fails to build.
         )"};
 
+#ifdef __linux__
     Setting<AbsolutePath> veneerCacheDir{
         this,
         "/run/nix/veneers",
