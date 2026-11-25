@@ -1,4 +1,6 @@
 #include <atomic>
+#include <cerrno>
+#include <optional>
 #include <vector>
 #include <pwd.h>
 #include <grp.h>
@@ -40,6 +42,80 @@ static std::vector<gid_t> get_group_list(const char * username, gid_t group_id)
 
 namespace {
 
+/* Goals prepare their sandboxes on helper threads at once, so these look users and groups up with the
+   reentrant calls: getpwnam() and getgrnam() return a buffer every thread shares, and another goal's
+   lookup between this one locking a user's file and reading its uid gave two builds the same uid, the
+   first of which to finish SIGKILLed the other with killUser(). */
+
+/**
+ * Calls `lookup` with an entry and a buffer for its strings, again with a larger buffer while that one
+ * is too small. Any other error is taken as no entry, as the non-reentrant calls returned none.
+ */
+template<typename T, typename Lookup>
+static void lookupEntry(Lookup && lookup)
+{
+    std::vector<char> buf(16384);
+    T entry;
+    while (lookup(&entry, buf.data(), buf.size()) == ERANGE)
+        buf.resize(buf.size() * 2);
+}
+
+struct GroupEntry
+{
+    gid_t gid;
+    Strings members;
+};
+
+static std::optional<GroupEntry> lookupGroup(const std::string & name)
+{
+    std::optional<GroupEntry> result;
+    lookupEntry<struct group>([&](struct group * gr, char * buf, size_t size) {
+        struct group * found = nullptr;
+        int err = getgrnam_r(name.c_str(), gr, buf, size, &found);
+        /* The members point into `buf`, so they are copied before it is reused or freed. */
+        if (err == 0 && found) {
+            result.emplace(GroupEntry{.gid = gr->gr_gid});
+            for (char ** p = gr->gr_mem; *p; ++p)
+                result->members.push_back(*p);
+        }
+        return err;
+    });
+    return result;
+}
+
+struct UserEntry
+{
+    std::string name;
+    uid_t uid;
+    gid_t gid;
+};
+
+static std::optional<UserEntry> lookupUser(const std::string & name)
+{
+    std::optional<UserEntry> result;
+    lookupEntry<struct passwd>([&](struct passwd * pw, char * buf, size_t size) {
+        struct passwd * found = nullptr;
+        int err = getpwnam_r(name.c_str(), pw, buf, size, &found);
+        if (err == 0 && found)
+            result.emplace(UserEntry{.name = pw->pw_name, .uid = pw->pw_uid, .gid = pw->pw_gid});
+        return err;
+    });
+    return result;
+}
+
+static std::optional<std::string> userNameOf(uid_t uid)
+{
+    std::optional<std::string> result;
+    lookupEntry<struct passwd>([&](struct passwd * pw, char * buf, size_t size) {
+        struct passwd * found = nullptr;
+        int err = getpwuid_r(uid, pw, buf, size, &found);
+        if (err == 0 && found)
+            result = pw->pw_name;
+        return err;
+    });
+    return result;
+}
+
 struct SimpleUserLock : UserLock
 {
     AutoCloseFD fdUserLock;
@@ -75,16 +151,13 @@ struct SimpleUserLock : UserLock
         assert(buildUsersGroup != "");
 
         /* Get the members of the build-users-group. */
-        struct group * gr = getgrnam(buildUsersGroup.c_str());
+        auto gr = lookupGroup(buildUsersGroup);
         if (!gr)
             throw Error("the group '%s' specified in 'build-users-group' does not exist", buildUsersGroup);
 
-        /* Copy the result of getgrnam. */
-        Strings users;
-        for (char ** p = gr->gr_mem; *p; ++p) {
-            debug("found build user '%s'", *p);
-            users.push_back(*p);
-        }
+        auto & users = gr->members;
+        for (auto & user : users)
+            debug("found build user '%s'", user);
 
         if (users.empty())
             throw Error("the build users group '%s' has no members", buildUsersGroup);
@@ -94,11 +167,11 @@ struct SimpleUserLock : UserLock
         for (auto & i : users) {
             debug("trying user '%s'", i);
 
-            struct passwd * pw = getpwnam(i.c_str());
+            auto pw = lookupUser(i);
             if (!pw)
                 throw Error("the user '%s' in the group '%s' does not exist", i, buildUsersGroup);
 
-            auto fnUserLock = userPoolDir / std::to_string(pw->pw_uid);
+            auto fnUserLock = userPoolDir / std::to_string(pw->uid);
 
             AutoCloseFD fd = open(fnUserLock.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
             if (!fd)
@@ -108,8 +181,8 @@ struct SimpleUserLock : UserLock
                 auto lock = std::make_unique<SimpleUserLock>();
 
                 lock->fdUserLock = std::move(fd);
-                lock->uid = pw->pw_uid;
-                lock->gid = gr->gr_gid;
+                lock->uid = pw->uid;
+                lock->gid = gr->gid;
 
                 /* Sanity check... */
                 if (lock->uid == getuid() || lock->uid == geteuid())
@@ -120,7 +193,7 @@ struct SimpleUserLock : UserLock
                  * usually either empty or contains a group such as "kvm". */
 
                 // Finally, trim back the GID list to its real size.
-                for (auto gid : get_group_list(pw->pw_name, pw->pw_gid)) {
+                for (auto gid : get_group_list(pw->name.c_str(), pw->gid)) {
                     if (gid != lock->gid)
                         lock->supplementaryGIDs.push_back(gid);
                 }
@@ -203,9 +276,8 @@ struct AutoUserLock : UserLock
 
                 auto firstUid = uidSettings.startId + i * maxIdsPerBuild;
 
-                auto pw = getpwuid(firstUid);
-                if (pw)
-                    throw Error("auto-allocated UID %d clashes with existing user account '%s'", firstUid, pw->pw_name);
+                if (auto name = userNameOf(firstUid))
+                    throw Error("auto-allocated UID %d clashes with existing user account '%s'", firstUid, *name);
 
                 auto lock = std::make_unique<AutoUserLock>();
                 lock->fdUserLock = std::move(fd);
@@ -213,10 +285,10 @@ struct AutoUserLock : UserLock
                 if (useUserNamespace)
                     lock->firstGid = firstUid;
                 else {
-                    struct group * gr = getgrnam(buildUsersGroup.c_str());
+                    auto gr = lookupGroup(buildUsersGroup);
                     if (!gr)
                         throw Error("the group '%s' specified in 'build-users-group' does not exist", buildUsersGroup);
-                    lock->firstGid = gr->gr_gid;
+                    lock->firstGid = gr->gid;
                 }
                 lock->nrIds = nrIds;
                 return lock;
